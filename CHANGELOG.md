@@ -2,6 +2,21 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.9.0] - 2026-04-01
+
+### Fixed
+- **Health endpoint returned `v1.0.0`** — `GET /squeezr/health` now returns the real version. Introduced `src/version.ts` as single source of truth; `index.ts` and `server.ts` both import from it. No more manual version drift across files.
+- **`squeezr discover` showed `readDedup: 0`** — cross-turn Read dedup runs in `compressor.ts`, not `deterministic.ts`. Added exported `hitPattern()` to `deterministic.ts` and call it from the dedup step.
+
+### Added
+- **Cross-turn Read dedup for OpenAI/Gemini** — parity with Anthropic format. `compressOpenAIMessages` and `compressGeminiContents` now detect and collapse duplicate file reads.
+- **Adaptive deterministic patterns at high context pressure** — patterns now receive the request's `pressure` value and tighten thresholds automatically:
+  - `git diff` at >90%: 0 context lines per hunk (was always 1)
+  - `git log` at >75%: cap 20 commits; at >90%: cap 10 (was always 30)
+  - `grep` at >75%: 6 matches/file; at >90%: 4 (was always 8)
+  - generic truncation at >90%: keep last 30 lines from 50-line threshold (was 80/50)
+- `pressure` param threaded through `preprocessForTool` → `applyBashPatterns` (backward-compatible default = 0)
+
 ## [1.8.0] - 2026-04-01
 
 ### Added

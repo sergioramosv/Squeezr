@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import OpenAI from 'openai'
 import { CompressionCache } from './cache.js'
-import { preprocess, preprocessForTool } from './deterministic.js'
+import { preprocess, preprocessForTool, hitPattern } from './deterministic.js'
 import { storeOriginal } from './expand.js'
 import { hashText, getBlock, setBlock, SessionBlock } from './sessionCache.js'
 import type { Config } from './config.js'
@@ -206,6 +206,7 @@ export async function compressAnthropicMessages(
     if (readDedupSaved > 0) {
       const tokens = Math.round(readDedupSaved / 3.5)
       console.log(`[squeezr/read-dedup] ${readDedupCount} duplicate file read(s) collapsed: -${readDedupSaved.toLocaleString()} chars (~${tokens} tokens)`)
+      hitPattern('readDedup', readDedupCount)
     }
   }
 
@@ -214,7 +215,7 @@ export async function compressAnthropicMessages(
   let detSaved = 0
   for (const { index, subIndex, text, tool } of allResults) {
     if (dedupedSet.has(`${index}:${subIndex}`)) continue  // already replaced by dedup
-    const det = preprocessForTool(text, tool)
+    const det = preprocessForTool(text, tool, pressure)
     if (det !== text) {
       ;(msgs[index].content as Array<{ content?: unknown }>)[subIndex].content = det
       detSaved += text.length - det.length
@@ -323,10 +324,34 @@ export async function compressOpenAIMessages(
 
   const msgs = structuredClone(messages) as OpenAIMessage[]
 
+  // Step 0: Cross-turn Read dedup
+  const dedupedIndices = new Set<number>()
+  {
+    const readHashToId = new Map<string, string>()
+    const seenMostRecent = new Set<string>()
+    let readDedupSaved = 0, readDedupCount = 0
+    for (let i = allResults.length - 1; i >= 0; i--) {
+      const { index, text, tool } = allResults[i]
+      if (tool.toLowerCase() !== 'read') continue
+      const hash = hashText(text)
+      if (!seenMostRecent.has(hash)) {
+        seenMostRecent.add(hash); readHashToId.set(hash, storeOriginal(text))
+      } else {
+        msgs[index].content = `[same file content as a later read in conversation — squeezr_expand(${readHashToId.get(hash)}) to retrieve]`
+        dedupedIndices.add(index); readDedupCount++; readDedupSaved += text.length
+      }
+    }
+    if (readDedupSaved > 0) {
+      console.log(`[squeezr/read-dedup] ${readDedupCount} duplicate file read(s) collapsed: -${readDedupSaved.toLocaleString()} chars`)
+      hitPattern('readDedup', readDedupCount)
+    }
+  }
+
   // Step 1: Deterministic preprocessing on ALL tool results
   let detSaved = 0
   for (const { index, text, tool } of allResults) {
-    const det = preprocessForTool(text, tool)
+    if (dedupedIndices.has(index)) continue
+    const det = preprocessForTool(text, tool, pressure)
     if (det !== text) {
       msgs[index].content = det
       detSaved += text.length - det.length
@@ -339,7 +364,7 @@ export async function compressOpenAIMessages(
 
   // Step 2: AI compression for old blocks above threshold
   const candidates = allResults.slice(0, Math.max(0, allResults.length - config.keepRecent))
-  const toProcess = candidates.filter(c => c.text.length >= threshold)
+  const toProcess = candidates.filter(c => c.text.length >= threshold && !dedupedIndices.has(c.index))
 
   if (toProcess.length === 0) return [msgs, emptySavings()]
 
@@ -426,10 +451,34 @@ export async function compressGeminiContents(
 
   const cts = structuredClone(contents) as GeminiContent[]
 
+  // Step 0: Cross-turn Read dedup
+  const geminiDedupedSet = new Set<string>()
+  {
+    const readHashToId = new Map<string, string>()
+    const seenMostRecent = new Set<string>()
+    let readDedupSaved = 0, readDedupCount = 0
+    for (let i = allResults.length - 1; i >= 0; i--) {
+      const { index, subIndex, text, tool } = allResults[i]
+      if (tool.toLowerCase() !== 'read') continue
+      const hash = hashText(text)
+      if (!seenMostRecent.has(hash)) {
+        seenMostRecent.add(hash); readHashToId.set(hash, storeOriginal(text))
+      } else {
+        cts[index].parts[subIndex].functionResponse!.response = { output: `[same file content as a later read — squeezr_expand(${readHashToId.get(hash)}) to retrieve]` }
+        geminiDedupedSet.add(`${index}:${subIndex}`); readDedupCount++; readDedupSaved += text.length
+      }
+    }
+    if (readDedupSaved > 0) {
+      console.log(`[squeezr/read-dedup/gemini] ${readDedupCount} duplicate file read(s) collapsed: -${readDedupSaved.toLocaleString()} chars`)
+      hitPattern('readDedup', readDedupCount)
+    }
+  }
+
   // Step 1: Deterministic preprocessing on ALL tool results
   let detSaved = 0
   for (const { index, subIndex, text, tool } of allResults) {
-    const det = preprocessForTool(text, tool)
+    if (geminiDedupedSet.has(`${index}:${subIndex}`)) continue
+    const det = preprocessForTool(text, tool, pressure)
     if (det !== text) {
       cts[index].parts[subIndex].functionResponse!.response = det
       detSaved += text.length - det.length
@@ -439,7 +488,7 @@ export async function compressGeminiContents(
 
   // Step 2: AI compression for old blocks above threshold
   const candidates = allResults.slice(0, Math.max(0, allResults.length - config.keepRecent))
-    .filter(c => c.text.length >= threshold)
+    .filter(c => c.text.length >= threshold && !geminiDedupedSet.has(`${c.index}:${c.subIndex}`))
 
   if (candidates.length === 0) return [cts, emptySavings()]
 

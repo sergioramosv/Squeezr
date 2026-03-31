@@ -19,6 +19,7 @@ import {
 import { compressSystemPrompt } from './systemPrompt.js'
 import { sessionCacheSize } from './sessionCache.js'
 import { detPatternHits } from './deterministic.js'
+import { VERSION } from './version.js'
 
 const ANTHROPIC_API = 'https://api.anthropic.com'
 const OPENAI_API = 'https://api.openai.com'
@@ -275,7 +276,7 @@ app.get('/squeezr/stats', (c) => {
 })
 
 app.get('/squeezr/health', (c) => {
-  return c.json({ status: 'ok', version: '1.0.0' })
+  return c.json({ status: 'ok', version: VERSION })
 })
 
 app.get('/squeezr/expand/:id', (c) => {

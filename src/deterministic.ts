@@ -33,6 +33,9 @@ export const detPatternHits: Record<string, number> = {}
 function hit(pattern: string): void {
   detPatternHits[pattern] = (detPatternHits[pattern] ?? 0) + 1
 }
+export function hitPattern(pattern: string, count = 1): void {
+  detPatternHits[pattern] = (detPatternHits[pattern] ?? 0) + count
+}
 
 // ── Base pipeline ─────────────────────────────────────────────────────────────
 
@@ -193,18 +196,20 @@ function compactGitStatus(text: string): string {
 
 // ── Bash: git ─────────────────────────────────────────────────────────────────
 
-function compactGitDiff(text: string): string {
+function compactGitDiff(text: string, pressure = 0): string {
   const lines = text.split('\n')
   const out: string[] = []
   let contextBudget = 0
   const changedFns = new Set<string>()
+  // At critical pressure (>90%) strip all context lines — only keep changed lines
+  const contextAllowed = pressure >= 0.9 ? 0 : 1
 
   for (const line of lines) {
     if (line.startsWith('diff --git') || line.startsWith('index ') ||
         line.startsWith('--- ') || line.startsWith('+++ ')) {
       out.push(line); contextBudget = 0
     } else if (line.startsWith('@@')) {
-      out.push(line); contextBudget = 1
+      out.push(line); contextBudget = contextAllowed
       // Extract function context from "@@ -l,s +l,s @@ funcName"
       const fnCtx = line.match(/@{2}[^@]+@{2}\s+(.+)/)
       if (fnCtx) {
@@ -214,7 +219,7 @@ function compactGitDiff(text: string): string {
         if (name && /^\w/.test(name)) changedFns.add(name)
       }
     } else if (line.startsWith('+') || line.startsWith('-')) {
-      out.push(line); contextBudget = 1
+      out.push(line); contextBudget = contextAllowed
     } else if (line.startsWith(' ') && contextBudget > 0) {
       out.push(line); contextBudget--
     }
@@ -228,7 +233,8 @@ function compactGitDiff(text: string): string {
 }
 
 // compact git log: one line per commit (full format); cap --oneline format
-function compactGitLog(text: string): string {
+function compactGitLog(text: string, pressure = 0): string {
+  const cap = pressure >= 0.9 ? 10 : pressure >= 0.75 ? 20 : 30
   // Full verbose format: commit <hash>\nAuthor: ...\nDate: ...\n\n    message
   if (text.startsWith('commit ') && text.includes('Author:') && text.includes('Date:')) {
     const lines = text.split('\n')
@@ -241,11 +247,13 @@ function compactGitLog(text: string): string {
       else if (line.trim() && !author.length) { /* skip */ } else if (line.trim()) msg = msg || line.trim()
     }
     if (hash) out.push(`${hash} ${msg} (${author}, ${date})`)
-    return out.join('\n') || text
+    const commits = out.slice(0, cap)
+    if (out.length > cap) commits.push(`... [${out.length - cap} more commits]`)
+    return commits.join('\n') || text
   }
-  // --oneline or other compact formats: already one line per commit, just cap at 30
+  // --oneline or other compact formats: already one line per commit, just cap
   const lines = text.split('\n').filter(l => l.trim())
-  if (lines.length > 30) return lines.slice(0, 30).join('\n') + `\n... [${lines.length - 30} more commits]`
+  if (lines.length > cap) return lines.slice(0, cap).join('\n') + `\n... [${lines.length - cap} more commits]`
   return text
 }
 
@@ -703,12 +711,14 @@ function extractGenericErrors(text: string): string {
   return text
 }
 
-// Generic fallback: long unrecognised bash output — keep last 50 lines
-function truncateLongOutput(text: string): string {
+// Generic fallback: long unrecognised bash output — keep last N lines
+function truncateLongOutput(text: string, pressure = 0): string {
+  const threshold = pressure >= 0.9 ? 50 : 80
+  const keepLines = pressure >= 0.9 ? 30 : 50
   const lines = text.split('\n')
-  if (lines.length <= 80) return text
-  const omitted = lines.length - 50
-  return `... [${omitted} earlier lines omitted]\n` + lines.slice(-50).join('\n')
+  if (lines.length <= threshold) return text
+  const omitted = lines.length - keepLines
+  return `... [${omitted} earlier lines omitted]\n` + lines.slice(-keepLines).join('\n')
 }
 
 function extractInstallSummary(text: string): string {
@@ -729,9 +739,9 @@ function compactFileListing(text: string): string {
   return `${lines.length} files total:\n${summary}`
 }
 
-function applyBashPatterns(text: string): string {
-  if (looksLikeGitDiff(text))       { hit('gitDiff');      return compactGitDiff(text) }
-  if (looksLikeGitLog(text))        { hit('gitLog');       return compactGitLog(text) }
+function applyBashPatterns(text: string, pressure = 0): string {
+  if (looksLikeGitDiff(text))       { hit('gitDiff');      return compactGitDiff(text, pressure) }
+  if (looksLikeGitLog(text))        { hit('gitLog');       return compactGitLog(text, pressure) }
   if (looksLikeGitStatus(text))     { hit('gitStatus');    return compactGitStatus(text) }
   if (looksLikeGitBranch(text))     { hit('gitBranch');    return compactGitBranch(text) }
   if (looksLikeCargoTest(text))     { hit('cargoTest');    return extractCargoTestFailures(text) }
@@ -762,7 +772,7 @@ function applyBashPatterns(text: string): string {
   // Generic error extractor: auto-applies rtk err logic when errors are dense
   const errExtracted = extractGenericErrors(text)
   if (errExtracted !== text)        { hit('errorExtracted'); return errExtracted }
-  hit('truncated'); return truncateLongOutput(text)
+  hit('truncated'); return truncateLongOutput(text, pressure)
 }
 
 // ── Grep tool ─────────────────────────────────────────────────────────────────
@@ -771,9 +781,10 @@ function applyBashPatterns(text: string): string {
 const MAX_GREP_PER_FILE = 8
 const MAX_GREP_FILES = 30
 
-function compactGrepOutput(text: string): string {
+function compactGrepOutput(text: string, pressure = 0): string {
   const lines = text.split('\n').filter(Boolean)
   if (lines.length < 20) return text
+  const maxPerFile = pressure >= 0.9 ? 4 : pressure >= 0.75 ? 6 : MAX_GREP_PER_FILE
 
   const byFile: Record<string, string[]> = {}
   const fileOrder: string[] = []
@@ -785,8 +796,8 @@ function compactGrepOutput(text: string): string {
       const file = match[1]
       const content = match[3] ?? ''
       if (!byFile[file]) { byFile[file] = []; fileOrder.push(file) }
-      if (byFile[file].length < MAX_GREP_PER_FILE) byFile[file].push(content.trim())
-      else if (byFile[file].length === MAX_GREP_PER_FILE) byFile[file].push(`  ... (+more)`)
+      if (byFile[file].length < maxPerFile) byFile[file].push(content.trim())
+      else if (byFile[file].length === maxPerFile) byFile[file].push(`  ... (+more)`)
     } else {
       // Unformatted line — keep as-is
       const key = '__raw__'
@@ -879,15 +890,15 @@ function compactReadOutput(text: string): string {
  * Called on ALL tool results including recent ones — covers turn-1 compression
  * without the user needing to prefix commands with `rtk`.
  */
-export function preprocessForTool(text: string, toolName: string): string {
+export function preprocessForTool(text: string, toolName: string, pressure = 0): string {
   let t = preprocess(text)
   const tool = toolName.toLowerCase()
 
   if (tool === 'bash') {
-    t = applyBashPatterns(t)
+    t = applyBashPatterns(t, pressure)
   } else if (tool === 'grep') {
     const before = t
-    t = compactGrepOutput(t)
+    t = compactGrepOutput(t, pressure)
     if (t !== before) hit('grepCompacted')
   } else if (tool === 'read') {
     t = compactReadOutput(t)
