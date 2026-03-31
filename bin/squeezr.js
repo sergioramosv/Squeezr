@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 'use strict'
 
-const { spawn, execSync } = require('child_process')
+const { spawn } = require('child_process')
+const http = require('http')
 const path = require('path')
+const fs = require('fs')
 
 const ROOT = path.join(__dirname, '..')
 const args = process.argv.slice(2)
 const command = args[0]
 
 const HELP = `
-Squeezr — AI context compressor for Claude Code, Codex, Aider, Gemini CLI and Ollama
+Squeezr v1.0.0 — AI context compressor for Claude Code, Codex, Aider, Gemini CLI and Ollama
 
 Usage:
   squeezr                  Start the proxy (default)
@@ -17,7 +19,8 @@ Usage:
   squeezr gain             Show token savings stats
   squeezr gain --reset     Reset saved stats
   squeezr status           Check if proxy is running
-  squeezr config           Print config file path
+  squeezr config           Print config file path and current settings
+  squeezr help             Show this help
 
 Set your CLI to use Squeezr:
   Claude Code:   ANTHROPIC_BASE_URL=http://localhost:8080
@@ -26,26 +29,13 @@ Set your CLI to use Squeezr:
   Ollama:        OPENAI_BASE_URL=http://localhost:8080
 `
 
-function findPython() {
-  for (const cmd of ['python3', 'python']) {
-    try {
-      const out = execSync(`${cmd} --version`, { stdio: 'pipe' }).toString()
-      const match = out.match(/(\d+)\.(\d+)/)
-      if (match && parseInt(match[1]) >= 3 && parseInt(match[2]) >= 9) {
-        return cmd
-      }
-    } catch {}
-  }
-  return null
-}
-
-function run(script, extraArgs = []) {
-  const python = findPython()
-  if (!python) {
-    console.error('Error: Python 3.9+ is required. Install it from https://python.org')
+function runNode(script, extraArgs = []) {
+  const distPath = path.join(ROOT, 'dist', script)
+  if (!fs.existsSync(distPath)) {
+    console.error(`Error: ${distPath} not found. Run 'npm run build' first.`)
     process.exit(1)
   }
-  const child = spawn(python, [path.join(ROOT, script), ...extraArgs], {
+  const child = spawn(process.execPath, [distPath, ...extraArgs], {
     stdio: 'inherit',
     cwd: ROOT,
   })
@@ -53,7 +43,6 @@ function run(script, extraArgs = []) {
 }
 
 async function checkStatus() {
-  const http = require('http')
   const port = process.env.SQUEEZR_PORT || 8080
   return new Promise(resolve => {
     const req = http.get(`http://localhost:${port}/squeezr/health`, res => {
@@ -81,14 +70,25 @@ async function checkStatus() {
   })
 }
 
+function showConfig() {
+  const tomlPath = path.join(ROOT, 'squeezr.toml')
+  console.log(`Config file: ${tomlPath}`)
+  if (fs.existsSync(tomlPath)) {
+    console.log('\nCurrent config:')
+    console.log(fs.readFileSync(tomlPath, 'utf-8'))
+  } else {
+    console.log('No squeezr.toml found. Using defaults.')
+  }
+}
+
 switch (command) {
   case undefined:
   case 'start':
-    run('main.py')
+    runNode('index.js')
     break
 
   case 'gain':
-    run('gain.py', args.slice(1))
+    runNode('gain.js', args.slice(1))
     break
 
   case 'status':
@@ -96,7 +96,7 @@ switch (command) {
     break
 
   case 'config':
-    console.log(path.join(ROOT, 'squeezr.toml'))
+    showConfig()
     break
 
   case '--help':

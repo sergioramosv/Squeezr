@@ -1,6 +1,6 @@
 {
   "name": "squeezr",
-  "version": "0.6.0",
+  "version": "1.0.0",
   "description": "AI proxy that compresses Claude Code, Codex, Aider, Gemini CLI and Ollama context windows to save thousands of tokens per session",
   "keywords": [
     "claude",
@@ -21,26 +21,34 @@
     "url": "https://github.com/sergioramosv/Squeezr"
   },
   "homepage": "https://github.com/sergioramosv/Squeezr#readme",
+  "type": "module",
   "bin": {
     "squeezr": "./bin/squeezr.js"
   },
   "scripts": {
-    "postinstall": "node lib/install.js"
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "gain": "node dist/gain.js"
   },
   "files": [
     "bin/",
-    "lib/",
-    "main.py",
-    "compressor.py",
-    "config.py",
-    "stats.py",
-    "cache.py",
-    "system_prompt.py",
-    "gain.py",
-    "squeezr.toml",
-    "requirements.txt"
+    "dist/",
+    "squeezr.toml"
   ],
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@hono/node-server": "^1.13.7",
+    "hono": "^4.7.5",
+    "openai": "^4.93.0",
+    "smol-toml": "^1.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  },
   "engines": {
-    "node": ">=16"
+    "node": ">=18"
   }
 }

@@ -2,6 +2,24 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.0.0] - 2026-03-31
+
+### Changed
+- **Full TypeScript rewrite** — entire codebase migrated from Python to TypeScript/Node.js
+- **Hono** replaces FastAPI as the HTTP framework — faster startup, no Python runtime needed
+- No more `pip install` — pure npm package, install with `npm install -g squeezr`
+- Requires Node.js 18+ (was Python 3.9+)
+
+### Added
+- **Deterministic preprocessing pipeline** (6 stages before AI compression): strip ANSI codes, strip progress bars, strip timestamps, deduplicate repeated lines, minify inline JSON, collapse whitespace
+- **`expand()` feature** — model can call `squeezr_expand(id)` to retrieve original content when needed; Squeezr intercepts the tool call and makes a continuation request transparently
+- **Gemini CLI support** (`POST /v1beta/models/*`) — compresses `functionResponse` blocks using Gemini Flash 8B
+- **Per-format compression**: Anthropic `tool_result`, OpenAI `role:tool`, Gemini `functionResponse`
+- **`GET /squeezr/expand/:id`** endpoint to retrieve stored originals via HTTP
+- LRU compression cache with configurable max entries
+- System prompt compression with separate cache (`~/.squeezr/sysprompt_cache.json`)
+- `src/gain.ts` — TypeScript gain stats CLI replacing `gain.py`
+
 ## [0.6.0] - 2026-03-31
 
 ### Added
