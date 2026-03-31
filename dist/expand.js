@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+import { createHash } from 'crypto';
 /**
  * Expand store — keeps original tool results so the model can retrieve
  * them if it needs more detail than the compressed summary provides.
@@ -17,7 +17,10 @@ import { randomBytes } from 'crypto';
  */
 const store = new Map();
 export function storeOriginal(original) {
-    const id = randomBytes(3).toString('hex'); // 6-char hex id
+    // Deterministic ID: same content always gets the same ID.
+    // This is required for KV cache warming — random IDs would produce different
+    // bytes on each request even for identical content, breaking Anthropic's prefix cache.
+    const id = createHash('md5').update(original).digest('hex').slice(0, 6);
     store.set(id, original);
     return id;
 }

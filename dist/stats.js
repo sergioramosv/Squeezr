@@ -8,6 +8,7 @@ export class Stats {
     totalOriginalChars = 0;
     totalCompressedChars = 0;
     totalCompressions = 0;
+    totalSessionCacheHits = 0;
     byTool = {};
     sessionStart = Date.now();
     record(originalChars, compressedChars, savings) {
@@ -15,6 +16,7 @@ export class Stats {
         this.totalOriginalChars += originalChars;
         this.totalCompressedChars += compressedChars;
         this.totalCompressions += savings.compressed;
+        this.totalSessionCacheHits += savings.sessionCacheHits;
         for (const entry of savings.byTool) {
             if (!this.byTool[entry.tool])
                 this.byTool[entry.tool] = { count: 0, savedChars: 0, originalChars: 0 };
@@ -44,6 +46,7 @@ export class Stats {
         return {
             requests: this.requests,
             compressions: this.totalCompressions,
+            session_cache_hits: this.totalSessionCacheHits,
             total_original_chars: this.totalOriginalChars,
             total_saved_chars: totalSaved,
             total_saved_tokens: Math.round(totalSaved / CHARS_PER_TOKEN),

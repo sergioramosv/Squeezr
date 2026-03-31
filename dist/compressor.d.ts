@@ -10,6 +10,7 @@ export interface Savings {
         originalChars: number;
     }>;
     dryRun: boolean;
+    sessionCacheHits: number;
 }
 export declare function getCache(config: Config): CompressionCache;
 interface AnthropicMessage {

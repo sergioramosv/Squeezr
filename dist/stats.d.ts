@@ -4,12 +4,14 @@ export declare class Stats {
     private totalOriginalChars;
     private totalCompressedChars;
     private totalCompressions;
+    private totalSessionCacheHits;
     private byTool;
     private sessionStart;
     record(originalChars: number, compressedChars: number, savings: Savings): void;
     summary(): {
         requests: number;
         compressions: number;
+        session_cache_hits: number;
         total_original_chars: number;
         total_saved_chars: number;
         total_saved_tokens: number;

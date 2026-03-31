@@ -6,6 +6,7 @@ import { getCache } from './compressor.js';
 import { compressAnthropicMessages, compressOpenAIMessages, compressGeminiContents, } from './compressor.js';
 import { injectExpandToolAnthropic, injectExpandToolOpenAI, handleAnthropicExpandCall, handleOpenAIExpandCall, retrieveOriginal, expandStoreSize, } from './expand.js';
 import { compressSystemPrompt } from './systemPrompt.js';
+import { sessionCacheSize } from './sessionCache.js';
 const ANTHROPIC_API = 'https://api.anthropic.com';
 const OPENAI_API = 'https://api.openai.com';
 const GOOGLE_API = 'https://generativelanguage.googleapis.com';
@@ -212,7 +213,7 @@ app.post('/v1beta/models/*', async (c) => {
 });
 // ── Squeezr internal endpoints ────────────────────────────────────────────────
 app.get('/squeezr/stats', (c) => {
-    return c.json({ ...stats.summary(), cache: getCache(config).stats(), expand_store_size: expandStoreSize(), dry_run: config.dryRun });
+    return c.json({ ...stats.summary(), cache: getCache(config).stats(), expand_store_size: expandStoreSize(), session_cache_size: sessionCacheSize(), dry_run: config.dryRun });
 });
 app.get('/squeezr/health', (c) => {
     return c.json({ status: 'ok', version: '1.0.0' });

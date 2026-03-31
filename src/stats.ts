@@ -13,6 +13,7 @@ export class Stats {
   private totalOriginalChars = 0
   private totalCompressedChars = 0
   private totalCompressions = 0
+  private totalSessionCacheHits = 0
   private byTool: Record<string, ToolData> = {}
   private sessionStart = Date.now()
 
@@ -21,6 +22,7 @@ export class Stats {
     this.totalOriginalChars += originalChars
     this.totalCompressedChars += compressedChars
     this.totalCompressions += savings.compressed
+    this.totalSessionCacheHits += savings.sessionCacheHits
 
     for (const entry of savings.byTool) {
       if (!this.byTool[entry.tool]) this.byTool[entry.tool] = { count: 0, savedChars: 0, originalChars: 0 }
@@ -53,6 +55,7 @@ export class Stats {
     return {
       requests: this.requests,
       compressions: this.totalCompressions,
+      session_cache_hits: this.totalSessionCacheHits,
       total_original_chars: this.totalOriginalChars,
       total_saved_chars: totalSaved,
       total_saved_tokens: Math.round(totalSaved / CHARS_PER_TOKEN),
