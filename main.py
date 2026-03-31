@@ -7,7 +7,7 @@ import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
 
-from compressor import compress_messages, compress_openai_messages, get_cache
+from compressor import compress_messages, compress_openai_messages, compress_gemini_contents, get_cache
 from config import Config
 from stats import Stats, print_banner
 from system_prompt import maybe_compress_system_prompt
@@ -17,6 +17,7 @@ stats = Stats()
 
 ANTHROPIC_API = "https://api.anthropic.com"
 OPENAI_API = "https://api.openai.com"
+GOOGLE_API = "https://generativelanguage.googleapis.com"
 
 SKIP_HEADERS = {"host", "content-length", "transfer-encoding", "connection"}
 SKIP_RESPONSE_HEADERS = {"content-encoding", "transfer-encoding", "connection"}
@@ -35,9 +36,15 @@ def extract_openai_key(headers: dict) -> str:
     return auth.removeprefix("Bearer ").removeprefix("bearer ").strip()
 
 
+def extract_google_key(headers: dict, query_params: dict) -> str:
+    return headers.get("x-goog-api-key", query_params.get("key", ""))
+
+
 def detect_upstream(headers: dict) -> str:
     """Returns the upstream API URL based on request headers."""
     lower_keys = {k.lower() for k in headers}
+    if "x-goog-api-key" in lower_keys:
+        return GOOGLE_API
     if "authorization" in lower_keys and "x-api-key" not in lower_keys:
         return OPENAI_API
     return ANTHROPIC_API
@@ -130,11 +137,60 @@ async def proxy_chat_completions(request: Request):
 
 # ── Shared stream helper ──────────────────────────────────────────────────────
 
-async def _stream(url: str, body: dict, headers: dict):
+async def _stream(url: str, body: dict, headers: dict, params: dict | None = None):
     async with httpx.AsyncClient(timeout=300) as client:
-        async with client.stream("POST", url, json=body, headers=headers) as resp:
+        async with client.stream("POST", url, json=body, headers=headers, params=params or {}) as resp:
             async for chunk in resp.aiter_bytes():
                 yield chunk
+
+
+# ── Google Gemini CLI ─────────────────────────────────────────────────────────
+
+@app.post("/v1beta/models/{model_path:path}")
+async def proxy_gemini(request: Request, model_path: str):
+    body = await request.json()
+    headers = dict(request.headers)
+    query_params = dict(request.query_params)
+    google_key = extract_google_key(headers, query_params)
+
+    contents = body.get("contents", [])
+    original_chars = estimate_chars(contents)
+
+    # Compress system instruction (Gemini uses systemInstruction field)
+    if config.compress_system_prompt and not config.dry_run:
+        sys_instruction = body.get("systemInstruction", {})
+        if isinstance(sys_instruction, dict):
+            parts = sys_instruction.get("parts", [])
+            if parts and isinstance(parts[0], dict):
+                text = parts[0].get("text", "")
+                compressed = await maybe_compress_system_prompt(text, google_key, use_google=True)
+                if compressed != text:
+                    import copy as _copy
+                    body["systemInstruction"] = _copy.deepcopy(sys_instruction)
+                    body["systemInstruction"]["parts"][0]["text"] = compressed
+
+    compressed_contents, savings = await compress_gemini_contents(contents, google_key, config)
+    body["contents"] = compressed_contents
+
+    stats.record(original_chars, estimate_chars(compressed_contents), savings)
+
+    fwd_headers = forward_headers(headers)
+    # Google key can be in header or query param — keep both
+    target_url = f"{GOOGLE_API}/v1beta/models/{model_path}"
+
+    is_streaming = "stream" in model_path.lower() or body.get("stream", False)
+
+    if is_streaming:
+        return StreamingResponse(
+            _stream(target_url, body, fwd_headers, params=query_params),
+            media_type="text/event-stream",
+            headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+        )
+
+    async with httpx.AsyncClient(timeout=300) as client:
+        resp = await client.post(target_url, json=body, headers=fwd_headers, params=query_params)
+        resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in SKIP_RESPONSE_HEADERS}
+        return Response(content=resp.content, status_code=resp.status_code, headers=resp_headers)
 
 
 # ── Catch-all: forward to correct upstream ────────────────────────────────────
@@ -170,7 +226,7 @@ async def get_stats():
 
 @app.get("/squeezr/health")
 async def health():
-    return {"status": "ok", "version": "0.4.0"}
+    return {"status": "ok", "version": "0.5.0"}
 
 
 if __name__ == "__main__":

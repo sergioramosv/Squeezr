@@ -2,6 +2,21 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [0.5.0] - 2026-03-31
+
+### Added
+- **Gemini CLI support** — `/v1beta/models/{model}:generateContent` endpoint intercepts and compresses Gemini requests
+- **Gemini Flash 8B compression** — cheapest Google model compresses `functionResponse` parts, reuses `x-goog-api-key` from request
+- **Gemini system instruction compression** — `systemInstruction` field compressed via Flash 8B and cached
+- **Gemini streaming** — `streamGenerateContent` SSE forwarded transparently
+- `system_prompt.py` now supports `use_google=True` for Gemini system prompts
+- `extract_google_key()` reads `x-goog-api-key` header or `?key=` query param
+- `detect_upstream()` now identifies Google API from headers
+
+### Changed
+- `_stream()` helper accepts optional `params` dict for query string forwarding
+- Version bumped to 0.5.0
+
 ## [0.4.0] - 2026-03-31
 
 ### Added

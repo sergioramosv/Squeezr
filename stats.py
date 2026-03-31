@@ -111,7 +111,7 @@ class Stats:
 
 def print_banner(port: int):
     print("=" * 52)
-    print("  Squeezr v0.4.0 - Claude Context Compressor")
+    print("  Squeezr v0.5.0 - Claude Context Compressor")
     print("  github.com/sergioramosv/Squeezr")
     print("=" * 52)
     print(f"  Running on: http://localhost:{port}")

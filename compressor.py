@@ -1,5 +1,8 @@
 import asyncio
 import copy
+import json
+
+import httpx
 from anthropic import AsyncAnthropic
 
 from cache import CompressionCache
@@ -261,7 +264,7 @@ async def gpt_mini_compress(client, text: str) -> str:
     return response.choices[0].message.content
 
 
-async def compress_openai_messages(messages: list, openai_key: str, config) -> tuple:
+async def compress_openai_messages(messages: list, openai_key: str, config) -> tuple:  # noqa: E302
     """
     Compresses old tool messages in OpenAI/Codex format.
     Uses GPT-4o-mini (same OpenAI key from the request) — no extra keys needed.
@@ -328,6 +331,122 @@ async def compress_openai_messages(messages: list, openai_key: str, config) -> t
         print(f"[squeezr/codex] Context pressure: {pressure:.0%} \u2192 threshold={threshold} chars")
 
     return messages, {
+        "compressed": success_count,
+        "saved_chars": total_original - total_compressed_size,
+        "original_chars": total_original,
+        "compressed_chars": total_compressed_size,
+        "by_tool": by_tool,
+        "dry_run": False,
+    }
+
+
+# ── Google Gemini CLI format ───────────────────────────────────────────────────
+
+def get_gemini_tool_results(contents: list) -> list:
+    """
+    Returns [(content_idx, part_idx, text, tool_name)] for Gemini functionResponse parts.
+    Gemini tool results live in role='user' contents as parts[i].functionResponse.
+    """
+    results = []
+    for i, content in enumerate(contents):
+        if content.get("role") != "user":
+            continue
+        for j, part in enumerate(content.get("parts", [])):
+            if "functionResponse" not in part:
+                continue
+            fn_resp = part["functionResponse"]
+            tool_name = fn_resp.get("name", "unknown")
+            response_val = fn_resp.get("response", {})
+            text = json.dumps(response_val) if isinstance(response_val, dict) else str(response_val)
+            if text:
+                results.append((i, j, text, tool_name))
+    return results
+
+
+async def gemini_flash_compress(text: str, api_key: str) -> str:
+    url = (
+        "https://generativelanguage.googleapis.com"
+        "/v1beta/models/gemini-1.5-flash-8b:generateContent"
+        f"?key={api_key}"
+    )
+    payload = {
+        "contents": [
+            {"role": "user", "parts": [{"text": f"{COMPRESSION_PROMPT}\n\n---\n{text[:4000]}"}]}
+        ]
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+
+
+async def compress_gemini_contents(contents: list, google_key: str, config) -> tuple:
+    """
+    Compresses old functionResponse parts in Gemini format.
+    Uses Gemini Flash 8B (cheapest Google model) — reuses the key from the request.
+    """
+    if config.disabled or not google_key:
+        return contents, {"compressed": 0, "saved_chars": 0, "by_tool": [], "dry_run": False}
+
+    cache = get_cache(config)
+    pressure = estimate_context_pressure(contents)
+    threshold = config.threshold_for_pressure(pressure)
+
+    tool_results = get_gemini_tool_results(contents)
+    candidates = tool_results[: -config.keep_recent] if len(tool_results) > config.keep_recent else []
+    to_compress = [(i, j, text, tool) for i, j, text, tool in candidates if len(text) >= threshold]
+
+    if not to_compress:
+        return contents, {"compressed": 0, "saved_chars": 0, "by_tool": [], "dry_run": False}
+
+    if config.dry_run:
+        potential = sum(len(t) for _, _, t, _ in to_compress)
+        print(
+            f"[squeezr dry-run/gemini] Would compress {len(to_compress)} block(s) "
+            f"| potential -{potential:,} chars | pressure={pressure:.0%} threshold={threshold}"
+        )
+        return contents, {"compressed": 0, "saved_chars": 0, "by_tool": [], "dry_run": True}
+
+    contents = copy.deepcopy(contents)
+
+    async def compress_one(text: str) -> str:
+        if config.cache_enabled:
+            cached = cache.get(text)
+            if cached:
+                return cached
+        result = await gemini_flash_compress(text, google_key)
+        if config.cache_enabled:
+            cache.set(text, result)
+        return result
+
+    compressed_texts = await asyncio.gather(
+        *[compress_one(text) for _, _, text, _ in to_compress],
+        return_exceptions=True,
+    )
+
+    total_original = 0
+    total_compressed_size = 0
+    success_count = 0
+    by_tool = []
+
+    for (i, j, original, tool_name), result in zip(to_compress, compressed_texts):
+        if isinstance(result, Exception):
+            continue
+        ratio = round((1 - len(result) / max(len(original), 1)) * 100)
+        contents[i]["parts"][j]["functionResponse"]["response"] = {
+            "output": f"[squeezr -{ratio}%] {result}"
+        }
+        saved = len(original) - len(result)
+        total_original += len(original)
+        total_compressed_size += len(result)
+        success_count += 1
+        by_tool.append({"tool": tool_name, "saved_chars": saved, "original_chars": len(original)})
+
+    if pressure >= 0.50:
+        print(f"[squeezr/gemini] Context pressure: {pressure:.0%} \u2192 threshold={threshold} chars")
+
+    return contents, {
         "compressed": success_count,
         "saved_chars": total_original - total_compressed_size,
         "original_chars": total_original,

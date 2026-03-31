@@ -35,7 +35,7 @@ def _save_cache(cache: dict):
         pass
 
 
-async def maybe_compress_system_prompt(prompt: str | None, api_key: str, use_openai: bool = False) -> str | None:
+async def maybe_compress_system_prompt(prompt: str | None, api_key: str, use_openai: bool = False, use_google: bool = False) -> str | None:
     """
     Compress a system prompt using Haiku (Anthropic) or GPT-4o-mini (OpenAI).
     use_openai=True is used for Codex requests, reusing the OpenAI key from the request.
@@ -50,7 +50,23 @@ async def maybe_compress_system_prompt(prompt: str | None, api_key: str, use_ope
         return cache[k]
 
     try:
-        if use_openai:
+        if use_google:
+            import httpx
+            url = (
+                "https://generativelanguage.googleapis.com"
+                f"/v1beta/models/gemini-1.5-flash-8b:generateContent?key={api_key}"
+            )
+            payload = {
+                "contents": [
+                    {"role": "user", "parts": [{"text": f"{COMPRESSION_PROMPT}\n\n---\n{prompt[:10000]}"}]}
+                ]
+            }
+            async with httpx.AsyncClient(timeout=30) as hclient:
+                resp = await hclient.post(url, json=payload)
+                resp.raise_for_status()
+                compressed = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            tag = "gemini/flash-8b"
+        elif use_openai:
             from openai import AsyncOpenAI
             client = AsyncOpenAI(api_key=api_key)
             response = await client.chat.completions.create(
