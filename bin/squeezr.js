@@ -11,13 +11,14 @@ const args = process.argv.slice(2)
 const command = args[0]
 
 const HELP = `
-Squeezr v1.0.0 — AI context compressor for Claude Code, Codex, Aider, Gemini CLI and Ollama
+Squeezr v1.8.0 — AI context compressor for Claude Code, Codex, Aider, Gemini CLI and Ollama
 
 Usage:
   squeezr                  Start the proxy (default)
   squeezr start            Start the proxy
   squeezr gain             Show token savings stats
   squeezr gain --reset     Reset saved stats
+  squeezr discover         Show pattern coverage report (proxy must be running)
   squeezr status           Check if proxy is running
   squeezr config           Print config file path and current settings
   squeezr help             Show this help
@@ -89,6 +90,10 @@ switch (command) {
 
   case 'gain':
     runNode('gain.js', args.slice(1))
+    break
+
+  case 'discover':
+    runNode('discover.js', args.slice(1))
     break
 
   case 'status':

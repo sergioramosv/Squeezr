@@ -176,10 +176,44 @@ export async function compressAnthropicMessages(
   // Clone once — all modifications go here
   const msgs = structuredClone(messages) as AnthropicMessage[]
 
+  // ── Step 0: Cross-turn Read dedup ────────────────────────────────────────────
+  // If the exact same file content was read multiple times in this conversation,
+  // keep the most recent occurrence at full fidelity and replace earlier ones
+  // with a short reference (saves tokens, model still has access via expand).
+  const dedupedSet = new Set<string>()  // "index:subIndex" keys — skip in later steps
+  {
+    const readHashToId = new Map<string, string>()  // hash → expand id of most recent
+    const seenMostRecent = new Set<string>()
+    let readDedupSaved = 0
+    let readDedupCount = 0
+    // Scan newest → oldest: first encounter of each hash = most recent
+    for (let i = allResults.length - 1; i >= 0; i--) {
+      const { index, subIndex, text, tool } = allResults[i]
+      if (tool.toLowerCase() !== 'read') continue
+      const hash = hashText(text)
+      if (!seenMostRecent.has(hash)) {
+        seenMostRecent.add(hash)
+        readHashToId.set(hash, storeOriginal(text))
+      } else {
+        const id = readHashToId.get(hash)!
+        ;(msgs[index].content as Array<{ content?: unknown }>)[subIndex].content =
+          `[same file content as a later read in conversation — squeezr_expand(${id}) to retrieve]`
+        dedupedSet.add(`${index}:${subIndex}`)
+        readDedupCount++
+        readDedupSaved += text.length
+      }
+    }
+    if (readDedupSaved > 0) {
+      const tokens = Math.round(readDedupSaved / 3.5)
+      console.log(`[squeezr/read-dedup] ${readDedupCount} duplicate file read(s) collapsed: -${readDedupSaved.toLocaleString()} chars (~${tokens} tokens)`)
+    }
+  }
+
   // ── Step 1: Deterministic preprocessing on ALL tool results (turn 1+) ───────
   // Replaces RTK: applied to recent blocks too, no manual `rtk` prefix needed.
   let detSaved = 0
   for (const { index, subIndex, text, tool } of allResults) {
+    if (dedupedSet.has(`${index}:${subIndex}`)) continue  // already replaced by dedup
     const det = preprocessForTool(text, tool)
     if (det !== text) {
       ;(msgs[index].content as Array<{ content?: unknown }>)[subIndex].content = det
@@ -193,7 +227,7 @@ export async function compressAnthropicMessages(
 
   // ── Step 2: AI compression for old blocks above threshold ─────────────────
   const candidates = allResults.slice(0, Math.max(0, allResults.length - config.keepRecent))
-  const toProcess = candidates.filter(c => c.text.length >= threshold)
+  const toProcess = candidates.filter(c => c.text.length >= threshold && !dedupedSet.has(`${c.index}:${c.subIndex}`))
 
   if (toProcess.length === 0) return [msgs, emptySavings()]
 

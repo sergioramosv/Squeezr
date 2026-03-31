@@ -2,8 +2,6 @@ import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { parse } from 'smol-toml'
 
-const TOML_PATH = join(import.meta.dirname, '..', 'squeezr.toml')
-
 interface TomlConfig {
   proxy?: { port?: number }
   compression?: {
@@ -29,13 +27,36 @@ interface TomlConfig {
   }
 }
 
-function loadToml(): TomlConfig {
-  if (!existsSync(TOML_PATH)) return {}
+function loadTomlFile(path: string): TomlConfig {
+  if (!existsSync(path)) return {}
   try {
-    return parse(readFileSync(TOML_PATH, 'utf-8')) as TomlConfig
+    return parse(readFileSync(path, 'utf-8')) as TomlConfig
   } catch {
     return {}
   }
+}
+
+function deepMerge(base: TomlConfig, override: TomlConfig): TomlConfig {
+  const result = { ...base } as Record<string, unknown>
+  for (const [k, v] of Object.entries(override)) {
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      result[k] = { ...(result[k] as Record<string, unknown> ?? {}), ...(v as Record<string, unknown>) }
+    } else if (v !== undefined) {
+      result[k] = v
+    }
+  }
+  return result as TomlConfig
+}
+
+function loadToml(): TomlConfig {
+  const globalPath = join(import.meta.dirname, '..', 'squeezr.toml')
+  const localPath = join(process.cwd(), '.squeezr.toml')
+  const globalCfg = loadTomlFile(globalPath)
+  const localCfg = loadTomlFile(localPath)
+  if (Object.keys(localCfg).length > 0) {
+    console.log(`[squeezr] Using project config: ${localPath}`)
+  }
+  return deepMerge(globalCfg, localCfg)
 }
 
 function env(key: string, fallback: string): string {

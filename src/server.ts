@@ -18,6 +18,7 @@ import {
 } from './expand.js'
 import { compressSystemPrompt } from './systemPrompt.js'
 import { sessionCacheSize } from './sessionCache.js'
+import { detPatternHits } from './deterministic.js'
 
 const ANTHROPIC_API = 'https://api.anthropic.com'
 const OPENAI_API = 'https://api.openai.com'
@@ -270,7 +271,7 @@ app.post('/v1beta/models/*', async (c) => {
 // ── Squeezr internal endpoints ────────────────────────────────────────────────
 
 app.get('/squeezr/stats', (c) => {
-  return c.json({ ...stats.summary(), cache: getCache(config).stats(), expand_store_size: expandStoreSize(), session_cache_size: sessionCacheSize(), dry_run: config.dryRun })
+  return c.json({ ...stats.summary(), cache: getCache(config).stats(), expand_store_size: expandStoreSize(), session_cache_size: sessionCacheSize(), dry_run: config.dryRun, pattern_hits: detPatternHits })
 })
 
 app.get('/squeezr/health', (c) => {

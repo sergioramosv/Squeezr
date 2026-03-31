@@ -1,5 +1,10 @@
 # Squeezr
 
+[![npm version](https://badge.fury.io/js/squeezr.svg)](https://www.npmjs.com/package/squeezr)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Node.js 18+](https://img.shields.io/badge/node-18%2B-brightgreen)](https://nodejs.org)
+[![Tests](https://img.shields.io/badge/tests-180%20passing-brightgreen)](https://github.com/sergioramosv/Squeezr)
+
 **Squeezr is a local proxy that sits between your AI coding CLI and its API, using a cheap AI model to semantically compress your context window — saving thousands of tokens per session, automatically, with zero changes to your workflow.**
 
 Works with Claude Code, Codex, Aider, OpenCode, Gemini CLI, and any Ollama-powered local LLM.

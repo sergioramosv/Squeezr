@@ -27,6 +27,13 @@
  *      Glob — compact large file listings into directory summary
  */
 
+// ── Pattern hit tracking (for squeezr discover) ───────────────────────────────
+
+export const detPatternHits: Record<string, number> = {}
+function hit(pattern: string): void {
+  detPatternHits[pattern] = (detPatternHits[pattern] ?? 0) + 1
+}
+
 // ── Base pipeline ─────────────────────────────────────────────────────────────
 
 function stripAnsi(text: string): string {
@@ -723,39 +730,39 @@ function compactFileListing(text: string): string {
 }
 
 function applyBashPatterns(text: string): string {
-  if (looksLikeGitDiff(text))       return compactGitDiff(text)
-  if (looksLikeGitLog(text))        return compactGitLog(text)
-  if (looksLikeGitStatus(text))     return compactGitStatus(text)
-  if (looksLikeGitBranch(text))     return compactGitBranch(text)
-  if (looksLikeCargoTest(text))     return extractCargoTestFailures(text)
-  if (looksLikeCargoBuild(text))    return extractCargoErrors(text)
-  if (looksLikeVitest(text))        return extractVitestFailures(text)
-  if (looksLikePlaywright(text))    return extractPlaywrightFailures(text)
-  if (looksLikePyTraceback(text))   return extractPyFailures(text)
-  if (looksLikeGoTest(text))        return extractGoTestFailures(text)
-  if (looksLikeTsc(text))           return compactTscErrors(text)
-  if (looksLikeEslint(text))        return compactEslint(text)
-  if (looksLikePrettier(text))      return compactPrettier(text)
-  if (looksLikeNextBuild(text))     return compactNextBuild(text)
-  if (looksLikePkgInstall(text))    return extractInstallSummary(text)
-  if (looksLikePkgList(text))       return compactPkgList(text)
-  if (looksLikePkgOutdated(text))   return compactPkgOutdated(text)
-  if (looksLikeTerraform(text))     return compactTerraform(text)
-  if (looksLikeNpx(text))           return stripNpxNoise(text)
-  if (looksLikeDockerPs(text))      return compactDockerPs(text)
-  if (looksLikeDockerImages(text))  return compactDockerImages(text)
-  if (looksLikeKubectl(text))       return compactKubectlGet(text)
-  if (looksLikePrisma(text))        return compactPrisma(text)
-  if (looksLikeGhPrChecks(text))   return compactGhPrChecks(text)
-  if (looksLikeGhPr(text))          return compactGhPr(text)
-  if (looksLikeGhRunList(text))     return compactGhRunList(text)
-  if (looksLikeGhIssueList(text))   return compactGhIssueList(text)
-  if (looksLikeCurl(text))          return compactCurlOutput(text)
-  if (looksLikeWget(text))          return compactWgetOutput(text)
+  if (looksLikeGitDiff(text))       { hit('gitDiff');      return compactGitDiff(text) }
+  if (looksLikeGitLog(text))        { hit('gitLog');       return compactGitLog(text) }
+  if (looksLikeGitStatus(text))     { hit('gitStatus');    return compactGitStatus(text) }
+  if (looksLikeGitBranch(text))     { hit('gitBranch');    return compactGitBranch(text) }
+  if (looksLikeCargoTest(text))     { hit('cargoTest');    return extractCargoTestFailures(text) }
+  if (looksLikeCargoBuild(text))    { hit('cargoBuild');   return extractCargoErrors(text) }
+  if (looksLikeVitest(text))        { hit('vitest');       return extractVitestFailures(text) }
+  if (looksLikePlaywright(text))    { hit('playwright');   return extractPlaywrightFailures(text) }
+  if (looksLikePyTraceback(text))   { hit('pyTraceback');  return extractPyFailures(text) }
+  if (looksLikeGoTest(text))        { hit('goTest');       return extractGoTestFailures(text) }
+  if (looksLikeTsc(text))           { hit('tsc');          return compactTscErrors(text) }
+  if (looksLikeEslint(text))        { hit('eslint');       return compactEslint(text) }
+  if (looksLikePrettier(text))      { hit('prettier');     return compactPrettier(text) }
+  if (looksLikeNextBuild(text))     { hit('nextBuild');    return compactNextBuild(text) }
+  if (looksLikePkgInstall(text))    { hit('pkgInstall');   return extractInstallSummary(text) }
+  if (looksLikePkgList(text))       { hit('pkgList');      return compactPkgList(text) }
+  if (looksLikePkgOutdated(text))   { hit('pkgOutdated');  return compactPkgOutdated(text) }
+  if (looksLikeTerraform(text))     { hit('terraform');    return compactTerraform(text) }
+  if (looksLikeNpx(text))           { hit('npx');          return stripNpxNoise(text) }
+  if (looksLikeDockerPs(text))      { hit('dockerPs');     return compactDockerPs(text) }
+  if (looksLikeDockerImages(text))  { hit('dockerImages'); return compactDockerImages(text) }
+  if (looksLikeKubectl(text))       { hit('kubectl');      return compactKubectlGet(text) }
+  if (looksLikePrisma(text))        { hit('prisma');       return compactPrisma(text) }
+  if (looksLikeGhPrChecks(text))   { hit('ghPrChecks');   return compactGhPrChecks(text) }
+  if (looksLikeGhPr(text))          { hit('ghPr');         return compactGhPr(text) }
+  if (looksLikeGhRunList(text))     { hit('ghRunList');    return compactGhRunList(text) }
+  if (looksLikeGhIssueList(text))   { hit('ghIssueList');  return compactGhIssueList(text) }
+  if (looksLikeCurl(text))          { hit('curl');         return compactCurlOutput(text) }
+  if (looksLikeWget(text))          { hit('wget');         return compactWgetOutput(text) }
   // Generic error extractor: auto-applies rtk err logic when errors are dense
   const errExtracted = extractGenericErrors(text)
-  if (errExtracted !== text)        return errExtracted
-  return truncateLongOutput(text)
+  if (errExtracted !== text)        { hit('errorExtracted'); return errExtracted }
+  hit('truncated'); return truncateLongOutput(text)
 }
 
 // ── Grep tool ─────────────────────────────────────────────────────────────────
@@ -844,6 +851,7 @@ function compactReadOutput(text: string): string {
   // Lockfiles: just show counts
   if (looksLikeLockfile(text)) {
     const pkgCount = (text.match(/^"?[a-z@]/gm) ?? []).length
+    hit('readLockfile')
     return `[lockfile — ${lines.length} lines, ~${pkgCount} packages — omitted to save tokens]`
   }
 
@@ -852,10 +860,11 @@ function compactReadOutput(text: string): string {
     const lang = detectCodeLanguage(text)
     if (lang) {
       const structured = extractCodeStructure(text, lang)
-      if (structured !== text) return structured
+      if (structured !== text) { hit('readSemantic'); return structured }
     }
   }
 
+  hit('readHeadTail')
   const head = lines.slice(0, READ_HEAD_LINES)
   const tail = lines.slice(-READ_TAIL_LINES)
   const omitted = lines.length - READ_HEAD_LINES - READ_TAIL_LINES
@@ -877,11 +886,14 @@ export function preprocessForTool(text: string, toolName: string): string {
   if (tool === 'bash') {
     t = applyBashPatterns(t)
   } else if (tool === 'grep') {
+    const before = t
     t = compactGrepOutput(t)
+    if (t !== before) hit('grepCompacted')
   } else if (tool === 'read') {
     t = compactReadOutput(t)
   } else if (tool === 'glob') {
-    if (t.split('\n').filter(l => l.trim()).length > 30) t = compactFileListing(t)
+    const lines = t.split('\n').filter(l => l.trim())
+    if (lines.length > 30) { hit('globCompacted'); t = compactFileListing(t) }
   }
 
   return t

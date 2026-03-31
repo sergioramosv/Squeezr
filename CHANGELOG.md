@@ -2,6 +2,19 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.8.0] - 2026-04-01
+
+### Added
+- **Per-project `.squeezr.toml`** — Squeezr now looks for `.squeezr.toml` in the working directory and deep-merges it over the global config. Enables per-repo overrides (thresholds, compression model, etc.)
+- **Cross-turn Read deduplication** — when the model reads the same file multiple times in a session, earlier occurrences are replaced with `[same file content as a later read — squeezr_expand(id) to retrieve]`. Keeps the most recent copy at full fidelity; collapses all earlier identical reads.
+- **`squeezr discover`** — pattern coverage CLI that queries the running proxy and prints which deterministic patterns fired, how many outputs hit the generic fallback, and Read/Grep/Glob breakdown. Run after a session to spot coverage gaps.
+- **Pattern hit tracking** — `detPatternHits` counter in `deterministic.ts` tracks every pattern match; exposed via `/squeezr/stats` as `pattern_hits`
+- **README badges** — npm version, license, Node.js version, test count
+- `src/discover.ts` new CLI command
+
+### Changed
+- `bin/squeezr.js`: added `discover` subcommand, bumped version string to 1.8.0
+
 ## [1.7.0] - 2026-04-01
 
 ### Added
