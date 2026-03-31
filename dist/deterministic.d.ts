@@ -15,15 +15,23 @@
  * 2. Tool-specific patterns — applied after base pipeline, keyed by tool name
  *    and content fingerprint. Replicates RTK-style filters at the proxy level
  *    so the user never needs to prefix commands with `rtk`.
- *    Covers: git diff, cargo build/test/clippy, vitest/jest, tsc, eslint/biome,
- *            pnpm/npm install, glob listings.
+ *
+ *    Bash patterns:
+ *      git diff/show/log, cargo build/test/clippy, vitest/jest, tsc,
+ *      eslint/biome, pnpm/npm install, prettier, next build,
+ *      docker ps/images/logs, kubectl get/logs, gh pr/run/issue, curl/wget
+ *
+ *    Tool patterns:
+ *      Grep — group matches by file, cap per-file lines
+ *      Read — truncate huge files (logs, lockfiles), keep head + tail
+ *      Glob — compact large file listings into directory summary
  */
 export declare function preprocess(text: string): string;
 export declare function preprocessRatio(original: string, processed: string): number;
 /**
  * Run all deterministic stages for a given tool result.
  * Applies base pipeline first, then tool-specific patterns.
- * Called on ALL tool results — including recent ones — so Squeezr
- * covers turn-1 compression without the user running `rtk`.
+ * Called on ALL tool results including recent ones — covers turn-1 compression
+ * without the user needing to prefix commands with `rtk`.
  */
 export declare function preprocessForTool(text: string, toolName: string): string;

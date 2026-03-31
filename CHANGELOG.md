@@ -2,6 +2,21 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.3.0] - 2026-03-31
+
+### Added
+- **Full RTK pattern parity** — Squeezr now covers all major RTK tool patterns at the proxy level. No manual `rtk` prefix needed for any of these:
+  - **git**: `diff` (context reduction to 1 line/hunk), `log` (one line per commit)
+  - **cargo**: `test` (failures only), `build/check/clippy` (errors/warnings only, no "Compiling X" spam)
+  - **JS/TS**: `vitest/jest` (failures only + summary), `tsc` (errors grouped by file), `eslint/biome` (grouped, no rule URLs), `prettier --check` (files needing format only), `next build` (route table + errors only)
+  - **package managers**: `pnpm/npm install` (summary line only)
+  - **Docker**: `ps` (compact), `images` (no dangling, short IDs), `logs` (last 50 lines)
+  - **kubectl**: `get` (compact column alignment)
+  - **gh CLI**: `pr view` (metadata only), `run list` (capped), `issue list` (capped)
+  - **curl**: strip verbose `-v` headers, keep response body
+- **Grep tool compaction** — matches grouped by file, capped at 8 per file, max 30 files
+- **Read tool compaction** — files >200 lines show head + tail with omission note; lockfiles replaced with summary count
+
 ## [1.2.0] - 2026-03-31
 
 ### Added
