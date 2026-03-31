@@ -6,7 +6,7 @@ import { Stats } from './stats.js'
 const PORT = config.port
 
 serve({ fetch: app.fetch, port: PORT }, () => {
-  console.log(`Squeezr v1.5.0 listening on http://localhost:${PORT}`)
+  console.log(`Squeezr v1.6.0 listening on http://localhost:${PORT}`)
   console.log(`Mode: ${config.dryRun ? 'dry-run' : 'active'}`)
   if (config.disabled) console.log('WARNING: compression is disabled')
   console.log(`Backends: Anthropic → Haiku | OpenAI → GPT-4o-mini | Gemini → Flash-8B | Local → ${config.localCompressionModel}`)

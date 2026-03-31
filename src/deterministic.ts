@@ -400,6 +400,163 @@ function compactGhIssueList(text: string): string {
   return lines.slice(0, 25).join('\n') + (lines.length > 25 ? `\n... [${lines.length - 25} more]` : '')
 }
 
+// ── Bash: Playwright ─────────────────────────────────────────────────────────
+
+function looksLikePlaywright(t: string): boolean {
+  return (t.includes('playwright') || /\.(spec|test)\.(ts|js)/.test(t)) &&
+    (t.includes('passed') || t.includes('failed') || t.includes('Error') || t.includes('FAILED'))
+}
+
+function extractPlaywrightFailures(text: string): string {
+  const lines = text.split('\n')
+  const out: string[] = []
+  // Collect detail lines for each fail block by scanning forward
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    // Passing test — always skip
+    if (/^\s*[\u2713\u2714]\s/.test(line)) continue
+    // Fail test header — collect it plus following detail lines
+    if (/^\s*([\u2718\u00D7\u2715]|FAILED)\s/.test(line)) {
+      out.push(line)
+      for (let j = i + 1; j < lines.length; j++) {
+        const next = lines[j]
+        if (/^\s*[\u2713\u2714\u2718\u00D7\u2715]\s/.test(next)) break  // next test
+        if (/^\s*\d+\s+(passed|failed|skipped)/.test(next)) break        // summary
+        if (next.trim()) out.push(next)
+      }
+      continue
+    }
+    // Standalone error lines (no ✘ header)
+    if (line.includes('Error:') || line.includes('TimeoutError')) out.push(line)
+    // Summary lines
+    if (/^\s*\d+\s+(passed|failed|skipped|flaky)/.test(line) ||
+        line.includes('Slowest') || /^Finished in/.test(line)) out.push(line)
+  }
+  if (out.length === 0) return lines.filter(l => /\d+\s+(passed|failed)/.test(l)).join('\n') || text
+  return out.join('\n')
+}
+
+// ── Bash: Python / pytest ─────────────────────────────────────────────────────
+
+function looksLikePyTraceback(t: string): boolean {
+  return t.includes('Traceback (most recent call last)') || t.includes('FAILED') && t.includes('.py::')
+}
+
+function extractPyFailures(text: string): string {
+  const lines = text.split('\n')
+  const out: string[] = []
+  let inTraceback = false
+  let inFailBlock = false
+  for (const line of lines) {
+    if (line.startsWith('Traceback (most recent call last)')) { out.push(line); inTraceback = true; continue }
+    if (inTraceback) { out.push(line); if (line.trim() && !line.startsWith(' ') && !line.startsWith('\t')) inTraceback = false; continue }
+    if (/^FAILED .+::/.test(line) || /^ERROR .+::/.test(line)) { out.push(line); inFailBlock = true; continue }
+    if (/^(PASSED|passed \d+|failed \d+|error \d+|=+ \d+ (passed|failed|error))/.test(line)) { out.push(line); inFailBlock = false; continue }
+    if (inFailBlock && line.trim()) out.push(line)
+    else if (!line.trim()) inFailBlock = false
+  }
+  if (out.length === 0) return lines.filter(l => /\d+ (passed|failed|error)/.test(l)).join('\n') || text
+  return out.join('\n')
+}
+
+// ── Bash: Go test ─────────────────────────────────────────────────────────────
+
+function looksLikeGoTest(t: string): boolean {
+  return /^--- (PASS|FAIL):/.test(t) || /^(ok|FAIL)\s+\S+\s+[\d.]+s/.test(t)
+}
+
+function extractGoTestFailures(text: string): string {
+  const lines = text.split('\n')
+  const out: string[] = []
+  let inFail = false
+  for (const line of lines) {
+    if (line.startsWith('--- FAIL:') || line.startsWith('FAIL\t')) { out.push(line); inFail = true }
+    else if (line.startsWith('--- PASS:') || /^ok\s/.test(line)) { inFail = false }
+    else if (line.startsWith('FAIL') || line.startsWith('panic:')) { out.push(line); inFail = true }
+    else if (/^(ok|FAIL)\s+\S+\s+[\d.]+s/.test(line)) out.push(line)
+    else if (inFail && line.trim()) out.push(line)
+    else if (!line.trim()) inFail = false
+  }
+  if (out.length === 0) return lines.filter(l => /^(ok|FAIL)\s/.test(l)).join('\n') || text
+  return out.join('\n')
+}
+
+// ── Bash: Terraform ───────────────────────────────────────────────────────────
+
+function looksLikeTerraform(t: string): boolean {
+  return (t.includes('# ') && (t.includes('will be created') || t.includes('will be destroyed') || t.includes('must be replaced'))) ||
+    t.includes('Terraform will perform')
+}
+
+function compactTerraform(text: string): string {
+  const lines = text.split('\n')
+  const out: string[] = []
+  for (const line of lines) {
+    // Keep resource change summary lines
+    if (/^\s*#/.test(line) && (line.includes('will be') || line.includes('must be') || line.includes('has been'))) out.push(line.trim())
+    // Keep plan summary
+    else if (line.includes('Plan:') || line.includes('Apply complete') || line.includes('No changes') || line.includes('Destroy complete')) out.push(line.trim())
+    // Keep error lines
+    else if (line.includes('Error:') || line.includes('error:')) out.push(line)
+  }
+  return out.join('\n') || text
+}
+
+// ── Bash: git branch ─────────────────────────────────────────────────────────
+
+function looksLikeGitBranch(t: string): boolean {
+  const lines = t.split('\n').filter(l => l.trim())
+  if (lines.length < 2) return false
+  // Branch names are short identifiers with no colons, parens, brackets, or spaces mid-line
+  const branchLine = /^[* ]{1,2}[\w/.\-]+(?: -> [\w/.\-]+)?$/
+  return lines.filter(l => branchLine.test(l)).length / lines.length > 0.8
+}
+
+function compactGitBranch(text: string): string {
+  const lines = text.split('\n').filter(l => l.trim())
+  if (lines.length <= 20) return text
+  const current = lines.find(l => l.startsWith('* '))
+  const rest = lines.filter(l => !l.startsWith('* ')).slice(0, 15)
+  const omitted = lines.length - 1 - rest.length
+  const out = current ? [current, ...rest] : rest
+  if (omitted > 0) out.push(`... [${omitted} more branches]`)
+  return out.join('\n')
+}
+
+// ── Bash: npx / npm run ───────────────────────────────────────────────────────
+
+function looksLikeNpx(t: string): boolean {
+  return /^npm warn|^npm error|Packages: .*installed|npx: installed/.test(t)
+}
+
+function stripNpxNoise(text: string): string {
+  // Remove npx install noise lines; keep the actual command output
+  const lines = text.split('\n')
+  const noiseStart = lines.findIndex(l => /^npx: installed \d+/.test(l) || /^Packages: \d+/.test(l))
+  if (noiseStart >= 0) {
+    // Find where actual output starts (after the npx banner)
+    const outputStart = lines.findIndex((l, i) => i > noiseStart && l.trim() && !/^npm (warn|error)/.test(l))
+    if (outputStart > 0) return lines.slice(outputStart).join('\n')
+  }
+  return lines.filter(l => !/^npm warn (deprecated|WARN)/.test(l)).join('\n')
+}
+
+// ── Bash: wget ────────────────────────────────────────────────────────────────
+
+function looksLikeWget(t: string): boolean {
+  return t.includes('--') && (t.includes('Resolving ') || t.includes('Connecting to ') || t.includes('HTTP request sent') || t.includes('saved ['))
+}
+
+function compactWgetOutput(text: string): string {
+  const lines = text.split('\n')
+  // Keep final result lines only
+  const keep = lines.filter(l =>
+    l.includes('saved [') || l.includes('200 OK') || l.includes('404 Not Found') ||
+    l.includes('Error') || l.includes('ERROR') || /^\d{4}-\d{2}-\d{2}.*saved/.test(l)
+  )
+  return keep.join('\n') || text
+}
+
 // ── Bash: curl / wget ─────────────────────────────────────────────────────────
 
 function compactCurlOutput(text: string): string {
@@ -454,6 +611,35 @@ function compactGhPrChecks(text: string): string {
   return lines.slice(0, 25).join('\n') + `\n... [${lines.length - 25} more checks]`
 }
 
+// ── Generic error extractor (rtk err equivalent) ─────────────────────────────
+// Applied before truncation when output is long and error-dense but unrecognised.
+// Unique Squeezr advantage: RTK needs explicit `rtk err <cmd>` prefix; Squeezr
+// detects automatically from content.
+
+function extractGenericErrors(text: string): string {
+  const lines = text.split('\n')
+  if (lines.length < 30) return text
+  const errorLines = lines.filter(l =>
+    /\b(Error|ERROR|error|FATAL|fatal|WARN|Warning|warning|Exception|exception|failed|FAILED)\b/.test(l) &&
+    !/^\s*\/\//.test(l)  // skip commented-out lines
+  )
+  if (errorLines.length === 0 || errorLines.length > lines.length * 0.5) return text  // not error-heavy
+  // Gather errors + 1 line of context each
+  const seen = new Set<number>()
+  const out: string[] = []
+  for (let i = 0; i < lines.length; i++) {
+    if (/\b(Error|ERROR|error|FATAL|fatal|Exception|exception|failed|FAILED)\b/.test(lines[i]) &&
+        !/^\s*\/\//.test(lines[i])) {
+      if (!seen.has(i - 1) && i > 0 && lines[i - 1].trim()) { seen.add(i - 1); out.push(lines[i - 1]) }
+      seen.add(i); out.push(lines[i])
+      if (i + 1 < lines.length && lines[i + 1].trim()) { seen.add(i + 1); out.push(lines[i + 1]) }
+    }
+  }
+  const saved = lines.length - out.length
+  if (out.length > 0 && saved > 10) return out.join('\n') + `\n... [${saved} non-error lines omitted]`
+  return text
+}
+
 // Generic fallback: long unrecognised bash output — keep last 50 lines
 function truncateLongOutput(text: string): string {
   const lines = text.split('\n')
@@ -484,9 +670,13 @@ function applyBashPatterns(text: string): string {
   if (looksLikeGitDiff(text))       return compactGitDiff(text)
   if (looksLikeGitLog(text))        return compactGitLog(text)
   if (looksLikeGitStatus(text))     return compactGitStatus(text)
+  if (looksLikeGitBranch(text))     return compactGitBranch(text)
   if (looksLikeCargoTest(text))     return extractCargoTestFailures(text)
   if (looksLikeCargoBuild(text))    return extractCargoErrors(text)
   if (looksLikeVitest(text))        return extractVitestFailures(text)
+  if (looksLikePlaywright(text))    return extractPlaywrightFailures(text)
+  if (looksLikePyTraceback(text))   return extractPyFailures(text)
+  if (looksLikeGoTest(text))        return extractGoTestFailures(text)
   if (looksLikeTsc(text))           return compactTscErrors(text)
   if (looksLikeEslint(text))        return compactEslint(text)
   if (looksLikePrettier(text))      return compactPrettier(text)
@@ -494,6 +684,8 @@ function applyBashPatterns(text: string): string {
   if (looksLikePkgInstall(text))    return extractInstallSummary(text)
   if (looksLikePkgList(text))       return compactPkgList(text)
   if (looksLikePkgOutdated(text))   return compactPkgOutdated(text)
+  if (looksLikeTerraform(text))     return compactTerraform(text)
+  if (looksLikeNpx(text))           return stripNpxNoise(text)
   if (looksLikeDockerPs(text))      return compactDockerPs(text)
   if (looksLikeDockerImages(text))  return compactDockerImages(text)
   if (looksLikeKubectl(text))       return compactKubectlGet(text)
@@ -503,6 +695,10 @@ function applyBashPatterns(text: string): string {
   if (looksLikeGhRunList(text))     return compactGhRunList(text)
   if (looksLikeGhIssueList(text))   return compactGhIssueList(text)
   if (looksLikeCurl(text))          return compactCurlOutput(text)
+  if (looksLikeWget(text))          return compactWgetOutput(text)
+  // Generic error extractor: auto-applies rtk err logic when errors are dense
+  const errExtracted = extractGenericErrors(text)
+  if (errExtracted !== text)        return errExtracted
   return truncateLongOutput(text)
 }
 

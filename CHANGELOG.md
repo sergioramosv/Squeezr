@@ -2,6 +2,21 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.6.0] - 2026-03-31
+
+### Added
+- **Playwright test compaction** — strips passing `✓` lines, keeps `✘`/FAILED blocks with context
+- **Python/pytest compaction** — keeps `FAILED`/`ERROR` lines + tracebacks, strips passing dots
+- **Go test compaction** — keeps `--- FAIL` blocks + `FAIL` summary, strips `--- PASS`
+- **Terraform compaction** — keeps resource change blocks + Plan summary, strips attribute noise
+- **`git branch` compaction** — caps at 20 branches with omission note
+- **wget compaction** — strips progress/connection noise, keeps final URL + save path
+- **Generic error extractor** — auto-extracts error lines ± context from any unrecognised output > 30 lines with > 50% noise (replaces manual `rtk err <cmd>` prefix)
+- 15 new tests (174 total)
+
+### Fixed
+- `looksLikeGitBranch` false positive on Playwright output (now requires pure `[* ] identifier` branch name pattern, no colons/parens/brackets)
+
 ## [1.5.0] - 2026-03-31
 
 ### Added

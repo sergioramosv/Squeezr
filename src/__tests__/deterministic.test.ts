@@ -667,6 +667,168 @@ describe('preprocessForTool - gh pr checks', () => {
   })
 })
 
+// ── Playwright ────────────────────────────────────────────────────────────────
+
+describe('preprocessForTool - playwright', () => {
+  const withFail = `Running 5 tests using 2 workers
+
+  ✘ tests/login.spec.ts:12:5 › Login › should log in [chromium] (5.2s)
+
+  Error: Timed out 5000ms waiting for expect(locator).toBeVisible()
+  Locator: getByRole('button', { name: 'Submit' })
+  Expected: visible
+  Received: hidden
+    at tests/login.spec.ts:15:22
+
+  ✓ tests/home.spec.ts:5:5 › Home › loads [chromium] (1.1s)
+
+  1 failed, 4 passed (12s)`
+
+  it('keeps failure blocks', () => {
+    const out = preprocessForTool(withFail, 'Bash')
+    expect(out).toContain('Timed out')
+    expect(out).toContain('toBeVisible')
+  })
+
+  it('strips passing test lines', () => {
+    const out = preprocessForTool(withFail, 'Bash')
+    expect(out).not.toContain('loads [chromium]')
+  })
+
+  it('keeps summary line', () => {
+    const out = preprocessForTool(withFail, 'Bash')
+    expect(out).toContain('1 failed, 4 passed')
+  })
+})
+
+// ── Python / pytest ───────────────────────────────────────────────────────────
+
+describe('preprocessForTool - python traceback', () => {
+  const traceback = `Traceback (most recent call last):
+  File "app.py", line 42, in process
+    result = calculate(x)
+  File "app.py", line 17, in calculate
+    return x / 0
+ZeroDivisionError: division by zero`
+
+  it('keeps traceback lines', () => {
+    const out = preprocessForTool(traceback, 'Bash')
+    expect(out).toContain('Traceback (most recent call last)')
+    expect(out).toContain('ZeroDivisionError')
+  })
+
+  it('detects pytest failure format', () => {
+    const pytest = `FAILED tests/test_calc.py::test_divide - ZeroDivisionError: division by zero\n1 failed in 0.12s`
+    const out = preprocessForTool(pytest, 'Bash')
+    expect(out).toContain('FAILED')
+    expect(out).toContain('ZeroDivisionError')
+  })
+})
+
+// ── Go test ───────────────────────────────────────────────────────────────────
+
+describe('preprocessForTool - go test', () => {
+  const goOutput = `--- PASS: TestAdd (0.00s)
+--- FAIL: TestDivide (0.00s)
+    calc_test.go:15: expected 5, got 0
+--- PASS: TestMultiply (0.00s)
+FAIL
+FAIL\tgithub.com/user/calc\t0.003s`
+
+  it('keeps failure lines', () => {
+    const out = preprocessForTool(goOutput, 'Bash')
+    expect(out).toContain('FAIL: TestDivide')
+    expect(out).toContain('expected 5, got 0')
+  })
+
+  it('strips passing test lines', () => {
+    const out = preprocessForTool(goOutput, 'Bash')
+    expect(out).not.toContain('PASS: TestAdd')
+    expect(out).not.toContain('PASS: TestMultiply')
+  })
+
+  it('keeps package result summary', () => {
+    const out = preprocessForTool(goOutput, 'Bash')
+    expect(out).toContain('FAIL\tgithub.com/user/calc')
+  })
+})
+
+// ── Terraform ─────────────────────────────────────────────────────────────────
+
+describe('preprocessForTool - terraform', () => {
+  const planOutput = `Terraform will perform the following actions:
+
+  # aws_instance.web will be created
+  + resource "aws_instance" "web" {
+      + ami           = "ami-0c55b159cbfafe1f0"
+      + instance_type = "t2.micro"
+      ... (many attributes)
+    }
+
+  # aws_s3_bucket.data must be replaced
+  -/+ resource "aws_s3_bucket" "data" {
+
+Plan: 1 to add, 0 to change, 1 to destroy.`
+
+  it('keeps resource change summary lines', () => {
+    const out = preprocessForTool(planOutput, 'Bash')
+    expect(out).toContain('will be created')
+    expect(out).toContain('must be replaced')
+  })
+
+  it('keeps Plan summary', () => {
+    const out = preprocessForTool(planOutput, 'Bash')
+    expect(out).toContain('Plan: 1 to add')
+  })
+
+  it('strips resource attribute details', () => {
+    const out = preprocessForTool(planOutput, 'Bash')
+    expect(out).not.toContain('ami-0c55b159cbfafe1f0')
+  })
+})
+
+// ── git branch ────────────────────────────────────────────────────────────────
+
+describe('preprocessForTool - git branch', () => {
+  it('caps long branch list at 20', () => {
+    const branches = ['* main', ...Array.from({ length: 30 }, (_, i) => `  feature/branch-${i}`)].join('\n')
+    const out = preprocessForTool(branches, 'Bash')
+    expect(out).toContain('more branches')
+    expect(out).toContain('* main')
+  })
+
+  it('keeps short branch lists unchanged', () => {
+    const branches = `* main\n  develop\n  feature/x`
+    const out = preprocessForTool(branches, 'Bash')
+    expect(out).toContain('develop')
+    expect(out).not.toContain('more branches')
+  })
+})
+
+// ── Generic error extractor ───────────────────────────────────────────────────
+
+describe('preprocessForTool - generic error extractor', () => {
+  it('extracts error lines from long unrecognized output', () => {
+    const noise = Array.from({ length: 50 }, (_, i) => `processing item ${i}`)
+    const withErrors = [
+      ...noise.slice(0, 20),
+      'Error: connection refused at host:5432',
+      'caused by: timeout after 30s',
+      ...noise.slice(20),
+    ].join('\n')
+    const out = preprocessForTool(withErrors, 'Bash')
+    expect(out).toContain('connection refused')
+    expect(out).toContain('non-error lines omitted')
+  })
+
+  it('does not modify output when no errors present', () => {
+    // All passing, no errors — should just truncate if long, not extract errors
+    const clean = Array.from({ length: 30 }, (_, i) => `step ${i} ok`).join('\n')
+    const out = preprocessForTool(clean, 'Bash')
+    expect(out).not.toContain('non-error lines omitted')
+  })
+})
+
 // ── Unknown tool falls through to base pipeline ───────────────────────────────
 
 describe('preprocessForTool - unknown tool', () => {
