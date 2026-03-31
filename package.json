@@ -1,0 +1,46 @@
+{
+  "name": "squeezr",
+  "version": "0.6.0",
+  "description": "AI proxy that compresses Claude Code, Codex, Aider, Gemini CLI and Ollama context windows to save thousands of tokens per session",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "codex",
+    "ollama",
+    "aider",
+    "gemini",
+    "token",
+    "compression",
+    "proxy",
+    "llm",
+    "ai"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sergioramosv/Squeezr"
+  },
+  "homepage": "https://github.com/sergioramosv/Squeezr#readme",
+  "bin": {
+    "squeezr": "./bin/squeezr.js"
+  },
+  "scripts": {
+    "postinstall": "node lib/install.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "main.py",
+    "compressor.py",
+    "config.py",
+    "stats.py",
+    "cache.py",
+    "system_prompt.py",
+    "gain.py",
+    "squeezr.toml",
+    "requirements.txt"
+  ],
+  "engines": {
+    "node": ">=16"
+  }
+}
