@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import OpenAI from 'openai'
 import { CompressionCache } from './cache.js'
-import { preprocess } from './deterministic.js'
+import { preprocess, preprocessForTool } from './deterministic.js'
 import { storeOriginal } from './expand.js'
 import { hashText, getBlock, setBlock, SessionBlock } from './sessionCache.js'
 import type { Config } from './config.js'
@@ -33,7 +33,7 @@ function estimatePressure(messages: unknown[]): number {
   return Math.min(chars / 800_000, 1.0)
 }
 
-// ── Compression functions ─────────────────────────────────────────────────────
+// ── Compression backends ──────────────────────────────────────────────────────
 
 async function compressWithHaiku(text: string, apiKey: string): Promise<string> {
   const client = new Anthropic({ apiKey })
@@ -78,7 +78,7 @@ async function compressWithOllama(text: string, baseUrl: string, model: string):
   return resp.choices[0].message.content ?? ''
 }
 
-// ── Shared compression orchestrator ──────────────────────────────────────────
+// ── AI compression orchestrator ───────────────────────────────────────────────
 
 type CompressFn = (text: string) => Promise<string>
 
@@ -88,7 +88,6 @@ async function runCompression(
   config: Config,
 ): Promise<Array<{ index: number; subIndex?: number; original: string; result: string; tool: string }>> {
   const cache = getCache(config)
-
   const results = await Promise.allSettled(
     items.map(async (item) => {
       const preprocessed = preprocess(item.text)
@@ -101,35 +100,19 @@ async function runCompression(
       return { ...item, original: item.text, result: compressed }
     }),
   )
-
   return results
     .filter((r) => r.status === 'fulfilled')
     .map((r) => (r as PromiseFulfilledResult<{ index: number; subIndex?: number; original: string; result: string; tool: string }>).value)
 }
 
-// ── Session cache helpers ─────────────────────────────────────────────────────
+// ── Session cache helper ──────────────────────────────────────────────────────
 
-/**
- * Build the full compressed string and store it in the session cache.
- * Returns {fullString, savedChars} for the given original+result pair.
- *
- * KV cache warming: by storing and reusing the exact fullString (including the
- * deterministic squeezr:id prefix), subsequent requests produce byte-for-byte
- * identical message content for unchanged blocks — preserving Anthropic's
- * prefix cache across requests.
- */
 function buildAndCache(original: string, result: string): { fullString: string; savedChars: number } {
   const ratio = Math.round((1 - result.length / Math.max(original.length, 1)) * 100)
   const id = storeOriginal(original)
   const fullString = `[squeezr:${id} -${ratio}%] ${result}`
   const savedChars = original.length - result.length
-
-  setBlock(hashText(original), {
-    fullString,
-    savedChars,
-    originalChars: original.length,
-  })
-
+  setBlock(hashText(original), { fullString, savedChars, originalChars: original.length })
   return { fullString, savedChars }
 }
 
@@ -156,8 +139,7 @@ function extractAnthropicToolResults(
             .filter(b => b.type === 'text').map(b => b.text ?? '').join('\n')
         : ''
       if (text.length > 0) {
-        const toolName = toolIdMap.get(block.tool_use_id ?? '') ?? 'unknown'
-        results.push({ index: i, subIndex: j, text, tool: toolName })
+        results.push({ index: i, subIndex: j, text, tool: toolIdMap.get(block.tool_use_id ?? '') ?? 'unknown' })
       }
     }
   }
@@ -188,64 +170,73 @@ export async function compressAnthropicMessages(
   const threshold = config.thresholdForPressure(pressure)
   const toolIdMap = buildAnthropicToolIdMap(messages)
   const allResults = extractAnthropicToolResults(messages, toolIdMap)
+
+  if (allResults.length === 0) return [messages, emptySavings()]
+
+  // Clone once — all modifications go here
+  const msgs = structuredClone(messages) as AnthropicMessage[]
+
+  // ── Step 1: Deterministic preprocessing on ALL tool results (turn 1+) ───────
+  // Replaces RTK: applied to recent blocks too, no manual `rtk` prefix needed.
+  let detSaved = 0
+  for (const { index, subIndex, text, tool } of allResults) {
+    const det = preprocessForTool(text, tool)
+    if (det !== text) {
+      ;(msgs[index].content as Array<{ content?: unknown }>)[subIndex].content = det
+      detSaved += text.length - det.length
+    }
+  }
+  if (detSaved > 0) {
+    const tokens = Math.round(detSaved / 3.5)
+    console.log(`[squeezr/det] Deterministic: -${detSaved.toLocaleString()} chars (~${tokens} tokens) across ${allResults.length} block(s)`)
+  }
+
+  // ── Step 2: AI compression for old blocks above threshold ─────────────────
   const candidates = allResults.slice(0, Math.max(0, allResults.length - config.keepRecent))
   const toProcess = candidates.filter(c => c.text.length >= threshold)
 
-  if (toProcess.length === 0) return [messages, emptySavings()]
+  if (toProcess.length === 0) return [msgs, emptySavings()]
 
   if (config.dryRun) {
     const potential = toProcess.reduce((sum, c) => sum + c.text.length, 0)
-    console.log(`[squeezr dry-run] Would compress ${toProcess.length} block(s) | potential -${potential.toLocaleString()} chars | pressure=${Math.round(pressure * 100)}%`)
-    return [messages, emptySavings(true)]
+    console.log(`[squeezr dry-run] Would AI-compress ${toProcess.length} block(s) | potential -${potential.toLocaleString()} chars | pressure=${Math.round(pressure * 100)}%`)
+    return [msgs, emptySavings(true)]
   }
 
-  // ── Differential compression: split session cache hits from uncached ──────
+  // Differential: split session cache hits from uncached
   const sessionHits: Array<{ index: number; subIndex: number; tool: string; block: SessionBlock }> = []
   const toCompress: Array<{ index: number; subIndex: number; text: string; tool: string }> = []
-
   for (const c of toProcess) {
     const cached = getBlock(hashText(c.text))
-    if (cached) {
-      sessionHits.push({ index: c.index, subIndex: c.subIndex, tool: c.tool, block: cached })
-    } else {
-      toCompress.push(c)
-    }
+    if (cached) sessionHits.push({ index: c.index, subIndex: c.subIndex, tool: c.tool, block: cached })
+    else toCompress.push(c)
   }
 
   const freshlyCompressed = toCompress.length > 0
     ? await runCompression(toCompress, t => compressWithHaiku(t, apiKey), config)
     : []
 
-  const msgs = structuredClone(messages) as AnthropicMessage[]
   let totalOriginal = 0
   let totalCompressed = 0
   const byTool: Savings['byTool'] = []
 
-  // Apply session cache hits (exact same bytes → KV cache preserved)
   for (const { index, subIndex, tool, block } of sessionHits) {
-    const msgBlock = (msgs[index].content as Array<{ content?: unknown }>)[subIndex]
-    msgBlock.content = block.fullString
+    ;(msgs[index].content as Array<{ content?: unknown }>)[subIndex].content = block.fullString
     totalOriginal += block.originalChars
     totalCompressed += block.originalChars - block.savedChars
     byTool.push({ tool, savedChars: block.savedChars, originalChars: block.originalChars })
   }
 
-  // Apply fresh compressions and populate session cache
   for (const { index, subIndex, original, result, tool } of freshlyCompressed) {
     const { fullString, savedChars } = buildAndCache(original, result)
-    const msgBlock = (msgs[index].content as Array<{ content?: unknown }>)[subIndex!]
-    msgBlock.content = fullString
+    ;(msgs[index].content as Array<{ content?: unknown }>)[subIndex!].content = fullString
     totalOriginal += original.length
     totalCompressed += original.length - savedChars
     byTool.push({ tool, savedChars, originalChars: original.length })
   }
 
-  if (pressure >= 0.5) {
-    console.log(`[squeezr] Context pressure: ${Math.round(pressure * 100)}% → threshold=${threshold} chars`)
-  }
-  if (sessionHits.length > 0) {
-    console.log(`[squeezr] Session cache: ${sessionHits.length} block(s) reused (KV cache preserved)`)
-  }
+  if (pressure >= 0.5) console.log(`[squeezr] Context pressure: ${Math.round(pressure * 100)}% → threshold=${threshold} chars`)
+  if (sessionHits.length > 0) console.log(`[squeezr] Session cache: ${sessionHits.length} block(s) reused (KV cache preserved)`)
 
   return [msgs, {
     compressed: freshlyCompressed.length,
@@ -270,9 +261,7 @@ function extractOpenAIToolResults(messages: OpenAIMessage[]): Array<{ index: num
   const nameMap = new Map<string, string>()
   for (const msg of messages) {
     if (msg.role !== 'assistant') continue
-    for (const tc of msg.tool_calls ?? []) {
-      nameMap.set(tc.id, tc.function.name)
-    }
+    for (const tc of msg.tool_calls ?? []) nameMap.set(tc.id, tc.function.name)
   }
   const results = []
   for (let i = 0; i < messages.length; i++) {
@@ -295,29 +284,43 @@ export async function compressOpenAIMessages(
   const pressure = estimatePressure(messages)
   const threshold = config.thresholdForPressure(pressure)
   const allResults = extractOpenAIToolResults(messages)
+
+  if (allResults.length === 0) return [messages, emptySavings()]
+
+  const msgs = structuredClone(messages) as OpenAIMessage[]
+
+  // Step 1: Deterministic preprocessing on ALL tool results
+  let detSaved = 0
+  for (const { index, text, tool } of allResults) {
+    const det = preprocessForTool(text, tool)
+    if (det !== text) {
+      msgs[index].content = det
+      detSaved += text.length - det.length
+    }
+  }
+  if (detSaved > 0) {
+    const tag = isLocal ? 'ollama' : 'codex'
+    console.log(`[squeezr/det/${tag}] Deterministic: -${detSaved.toLocaleString()} chars across ${allResults.length} block(s)`)
+  }
+
+  // Step 2: AI compression for old blocks above threshold
   const candidates = allResults.slice(0, Math.max(0, allResults.length - config.keepRecent))
   const toProcess = candidates.filter(c => c.text.length >= threshold)
 
-  if (toProcess.length === 0) return [messages, emptySavings()]
+  if (toProcess.length === 0) return [msgs, emptySavings()]
 
   if (config.dryRun) {
-    const potential = toProcess.reduce((sum, c) => sum + c.text.length, 0)
     const tag = isLocal ? 'ollama' : 'codex'
-    console.log(`[squeezr dry-run/${tag}] Would compress ${toProcess.length} block(s) | potential -${potential.toLocaleString()} chars`)
-    return [messages, emptySavings(true)]
+    console.log(`[squeezr dry-run/${tag}] Would AI-compress ${toProcess.length} block(s) | potential -${toProcess.reduce((s, c) => s + c.text.length, 0).toLocaleString()} chars`)
+    return [msgs, emptySavings(true)]
   }
 
-  // ── Differential compression ──────────────────────────────────────────────
   const sessionHits: Array<{ index: number; tool: string; block: SessionBlock }> = []
   const toCompress: Array<{ index: number; text: string; tool: string }> = []
-
   for (const c of toProcess) {
     const cached = getBlock(hashText(c.text))
-    if (cached) {
-      sessionHits.push({ index: c.index, tool: c.tool, block: cached })
-    } else {
-      toCompress.push(c)
-    }
+    if (cached) sessionHits.push({ index: c.index, tool: c.tool, block: cached })
+    else toCompress.push(c)
   }
 
   const compressFn: CompressFn = isLocal
@@ -328,9 +331,7 @@ export async function compressOpenAIMessages(
     ? await runCompression(toCompress, compressFn, config)
     : []
 
-  const msgs = structuredClone(messages) as OpenAIMessage[]
-  let totalOriginal = 0
-  let totalCompressed = 0
+  let totalOriginal = 0, totalCompressed = 0
   const byTool: Savings['byTool'] = []
 
   for (const { index, tool, block } of sessionHits) {
@@ -352,18 +353,9 @@ export async function compressOpenAIMessages(
     const tag = isLocal ? 'ollama' : 'codex'
     console.log(`[squeezr/${tag}] Context pressure: ${Math.round(pressure * 100)}% → threshold=${threshold} chars`)
   }
-  if (sessionHits.length > 0) {
-    console.log(`[squeezr] Session cache: ${sessionHits.length} block(s) reused (KV cache preserved)`)
-  }
+  if (sessionHits.length > 0) console.log(`[squeezr] Session cache: ${sessionHits.length} block(s) reused`)
 
-  return [msgs, {
-    compressed: freshlyCompressed.length,
-    savedChars: totalOriginal - totalCompressed,
-    originalChars: totalOriginal,
-    byTool,
-    dryRun: false,
-    sessionCacheHits: sessionHits.length,
-  }]
+  return [msgs, { compressed: freshlyCompressed.length, savedChars: totalOriginal - totalCompressed, originalChars: totalOriginal, byTool, dryRun: false, sessionCacheHits: sessionHits.length }]
 }
 
 // ── Gemini format ─────────────────────────────────────────────────────────────
@@ -383,51 +375,58 @@ export async function compressGeminiContents(
   const pressure = estimatePressure(contents)
   const threshold = config.thresholdForPressure(pressure)
 
-  const toProcess: Array<{ index: number; subIndex: number; text: string; tool: string }> = []
+  const allResults: Array<{ index: number; subIndex: number; text: string; tool: string }> = []
   for (let i = 0; i < contents.length; i++) {
-    const content = contents[i]
-    if (content.role !== 'user') continue
-    for (let j = 0; j < content.parts.length; j++) {
-      const part = content.parts[j]
+    if (contents[i].role !== 'user') continue
+    for (let j = 0; j < contents[i].parts.length; j++) {
+      const part = contents[i].parts[j]
       if (!part.functionResponse) continue
       const text = typeof part.functionResponse.response === 'string'
         ? part.functionResponse.response
         : JSON.stringify(part.functionResponse.response)
-      if (text.length >= threshold) {
-        toProcess.push({ index: i, subIndex: j, text, tool: part.functionResponse.name })
-      }
+      if (text.length > 0) allResults.push({ index: i, subIndex: j, text, tool: part.functionResponse.name })
     }
   }
 
-  const candidates = toProcess.slice(0, Math.max(0, toProcess.length - config.keepRecent))
-  if (candidates.length === 0) return [contents, emptySavings()]
+  if (allResults.length === 0) return [contents, emptySavings()]
+
+  const cts = structuredClone(contents) as GeminiContent[]
+
+  // Step 1: Deterministic preprocessing on ALL tool results
+  let detSaved = 0
+  for (const { index, subIndex, text, tool } of allResults) {
+    const det = preprocessForTool(text, tool)
+    if (det !== text) {
+      cts[index].parts[subIndex].functionResponse!.response = det
+      detSaved += text.length - det.length
+    }
+  }
+  if (detSaved > 0) console.log(`[squeezr/det/gemini] Deterministic: -${detSaved.toLocaleString()} chars across ${allResults.length} block(s)`)
+
+  // Step 2: AI compression for old blocks above threshold
+  const candidates = allResults.slice(0, Math.max(0, allResults.length - config.keepRecent))
+    .filter(c => c.text.length >= threshold)
+
+  if (candidates.length === 0) return [cts, emptySavings()]
 
   if (config.dryRun) {
-    const potential = candidates.reduce((sum, c) => sum + c.text.length, 0)
-    console.log(`[squeezr dry-run/gemini] Would compress ${candidates.length} block(s) | potential -${potential.toLocaleString()} chars`)
-    return [contents, emptySavings(true)]
+    console.log(`[squeezr dry-run/gemini] Would AI-compress ${candidates.length} block(s) | potential -${candidates.reduce((s, c) => s + c.text.length, 0).toLocaleString()} chars`)
+    return [cts, emptySavings(true)]
   }
 
-  // ── Differential compression ──────────────────────────────────────────────
   const sessionHits: Array<{ index: number; subIndex: number; tool: string; block: SessionBlock }> = []
   const toCompress: Array<{ index: number; subIndex: number; text: string; tool: string }> = []
-
   for (const c of candidates) {
     const cached = getBlock(hashText(c.text))
-    if (cached) {
-      sessionHits.push({ index: c.index, subIndex: c.subIndex, tool: c.tool, block: cached })
-    } else {
-      toCompress.push(c)
-    }
+    if (cached) sessionHits.push({ index: c.index, subIndex: c.subIndex, tool: c.tool, block: cached })
+    else toCompress.push(c)
   }
 
   const freshlyCompressed = toCompress.length > 0
-    ? await runCompression(candidates, t => compressWithGeminiFlash(t, apiKey), config)
+    ? await runCompression(toCompress, t => compressWithGeminiFlash(t, apiKey), config)
     : []
 
-  const cts = structuredClone(contents) as GeminiContent[]
-  let totalOriginal = 0
-  let totalCompressed = 0
+  let totalOriginal = 0, totalCompressed = 0
   const byTool: Savings['byTool'] = []
 
   for (const { index, subIndex, tool, block } of sessionHits) {
@@ -445,18 +444,9 @@ export async function compressGeminiContents(
     byTool.push({ tool, savedChars, originalChars: original.length })
   }
 
-  if (sessionHits.length > 0) {
-    console.log(`[squeezr/gemini] Session cache: ${sessionHits.length} block(s) reused (KV cache preserved)`)
-  }
+  if (sessionHits.length > 0) console.log(`[squeezr/gemini] Session cache: ${sessionHits.length} block(s) reused`)
 
-  return [cts, {
-    compressed: freshlyCompressed.length,
-    savedChars: totalOriginal - totalCompressed,
-    originalChars: totalOriginal,
-    byTool,
-    dryRun: false,
-    sessionCacheHits: sessionHits.length,
-  }]
+  return [cts, { compressed: freshlyCompressed.length, savedChars: totalOriginal - totalCompressed, originalChars: totalOriginal, byTool, dryRun: false, sessionCacheHits: sessionHits.length }]
 }
 
 function emptySavings(dryRun = false): Savings {

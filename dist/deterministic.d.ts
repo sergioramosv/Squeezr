@@ -1,19 +1,29 @@
 /**
  * Deterministic pre-compression pipeline.
  *
- * These stages run BEFORE the AI compressor as a preprocessor —
- * not as a replacement. Cleaner input → better semantic compression
- * at lower token cost from the AI stage.
+ * Two layers:
  *
- * Pipeline order matters:
- *  1. Strip ANSI codes        (noise removal)
- *  2. Strip progress bars     (noise removal)
- *  3. Collapse whitespace     (size reduction)
- *  4. Deduplicate lines       (size reduction — most impactful for logs)
- *  5. Minify inline JSON      (size reduction)
- *  6. Strip timestamps        (noise removal)
+ * 1. Base pipeline — runs on all tool results regardless of tool type.
+ *    Pipeline order matters:
+ *     1. Strip ANSI codes        (noise removal)
+ *     2. Strip progress bars     (noise removal)
+ *     3. Collapse whitespace     (size reduction)
+ *     4. Deduplicate lines       (size reduction — most impactful for logs)
+ *     5. Minify inline JSON      (size reduction)
+ *     6. Strip timestamps        (noise removal)
+ *
+ * 2. Tool-specific patterns — applied after base pipeline, keyed by tool name
+ *    and content fingerprint. Replicates RTK-style filters at the proxy level
+ *    so the user never needs to prefix commands with `rtk`.
+ *    Covers: git diff, cargo build/test/clippy, vitest/jest, tsc, eslint/biome,
+ *            pnpm/npm install, glob listings.
  */
-/** Run all deterministic stages on a piece of text. */
 export declare function preprocess(text: string): string;
-/** Returns how much the deterministic pipeline reduced the text (ratio 0-1). */
 export declare function preprocessRatio(original: string, processed: string): number;
+/**
+ * Run all deterministic stages for a given tool result.
+ * Applies base pipeline first, then tool-specific patterns.
+ * Called on ALL tool results — including recent ones — so Squeezr
+ * covers turn-1 compression without the user running `rtk`.
+ */
+export declare function preprocessForTool(text: string, toolName: string): string;
