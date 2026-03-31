@@ -28,13 +28,36 @@ localhost:8080  (Squeezr proxy)
     |        Compressed once on first request, cached forever.
     |        ~13KB Claude Code system prompt → ~600 tokens. Never resent in full again.
     |
-    |-- [2] Deterministic preprocessing (before AI compression)
-    |        6 noise-removal stages run on every tool result before AI sees it:
+    |-- [2] Deterministic preprocessing — noise removal
+    |        Runs on every tool result before anything else:
     |        strip ANSI codes, strip progress bars, strip timestamps,
-    |        deduplicate repeated lines, minify inline JSON, collapse whitespace.
-    |        Cleaner input → better AI compression at lower cost.
+    |        deduplicate repeated stack traces, deduplicate repeated lines,
+    |        minify inline JSON, collapse whitespace.
     |
-    |-- [3] Adaptive tool result compression
+    |-- [3] Deterministic preprocessing — tool-specific patterns
+    |        RTK-parity filters applied automatically (no `rtk` prefix needed):
+    |          git:         diff (1-line context + function summary), log, status, branch
+    |          cargo:       test (failures only), build/check/clippy (errors only)
+    |          JS/TS:       vitest/jest (failures only), playwright (failures only)
+    |                       tsc (errors by file), eslint/biome (grouped), prettier
+    |                       pnpm/npm install (summary), list (direct deps), outdated
+    |                       next build (route table + errors), npx noise stripped
+    |          Python:      pytest tracebacks, FAILED lines only
+    |          Go:          go test (--- FAIL blocks only)
+    |          Terraform:   resource change summary + Plan line
+    |          Docker:      ps (compact), images (no dangling), logs (last 50)
+    |          kubectl:     get (compact alignment)
+    |          Prisma:      strip ASCII box art
+    |          gh:          pr view, pr checks, run list, issue list (all capped)
+    |          Network:     curl (strip verbose headers), wget (strip progress)
+    |        Squeezr-exclusive patterns (no RTK equivalent):
+    |          git diff →   prepends "Changed: fn1, fn2" for large diffs
+    |          Read tool →  large code files (.ts/.js/.py/.go/.rs > 500 lines)
+    |                       show imports + top-level signatures only, bodies omitted
+    |          stack traces → block-level dedup across repeated crash/log output
+    |          any output → auto-extracts error lines when >50% of content is noise
+    |
+    |-- [4] Adaptive AI compression
     |        Old bash output, file reads, grep results compressed by a cheap model.
     |        Threshold adjusts automatically based on context pressure:
     |          < 50% full  →  compress blocks > 1,500 chars
@@ -42,11 +65,12 @@ localhost:8080  (Squeezr proxy)
     |          75-90% full →  compress blocks > 400 chars
     |          > 90% full  →  compress everything > 150 chars
     |
-    |-- [4] Compression cache
-    |        Already-compressed content cached to disk at ~/.squeezr/cache.json.
-    |        Same git status appearing twice? Zero cost — served from cache.
+    |-- [5] Session cache + KV cache warming
+    |        Session cache: blocks identical to a previous request skip the pipeline.
+    |        KV warming: unchanged blocks keep deterministic IDs so Anthropic's
+    |        prefix cache stays warm — 90% discount on already-seen tokens.
     |
-    |-- [5] expand() — lossless retrieval
+    |-- [6] expand() — lossless retrieval
     |        Every compressed block is stored by ID. If the model needs the full
     |        original, it calls squeezr_expand(id). Squeezr intercepts the tool call,
     |        injects the original, and makes a continuation request — transparently.
@@ -103,18 +127,34 @@ For a typical 2-hour coding session with 40+ tool calls, Squeezr saves tens of t
 
 ## How it differs from RTK
 
-[RTK](https://github.com/rtk-ai/rtk) and Squeezr solve different parts of the same problem. They are complementary, not competing.
+[RTK](https://github.com/rtk-ai/rtk) is a shell-layer prefix tool that filters command output before it enters context. Squeezr started as a complementary API-layer tool, but as of v1.5.0 it now covers all the same deterministic patterns as RTK — plus several that RTK cannot do.
 
-| | RTK | Squeezr |
+### Pattern coverage
+
+Both tools cover the same ~30 command patterns: git diff/log/status/branch, cargo test/build/clippy, vitest/jest/playwright, pytest, go test, tsc, eslint, pnpm/npm, docker, kubectl, terraform, gh, curl, wget, and more.
+
+### Where Squeezr goes further
+
+| Feature | RTK | Squeezr |
 |---|---|---|
-| **Where it acts** | Shell layer — filters stdout before it enters context | API layer — compresses what's already accumulated in history |
-| **Method** | Static rules and regex patterns | Semantic AI compression |
-| **What it covers** | Current command output only | All tool results, system prompt, optionally conversation messages |
-| **Usage** | Manual — you type `rtk git diff` | Automatic — transparent proxy, nothing changes |
-| **Turn 1: git diff** | Filters from 5K to 1K chars | Does nothing (too recent) |
-| **Turn 20: that same diff** | Cannot touch it | Compresses it to ~200 chars |
+| **Usage** | Manual prefix: `rtk git diff` | Automatic — nothing changes |
+| **Turn 1: current output** | Filters immediately | Same (deterministic pass) |
+| **Turn 20: old output** | ❌ cannot touch history | ✅ compresses stale blocks |
+| **System prompt** | ❌ | ✅ compressed once, cached forever (-71%) |
+| **AI fallback** | ❌ patterns only | ✅ semantic compression for unrecognised output |
+| **Session dedup** | ❌ | ✅ identical blocks skip the entire pipeline |
+| **KV cache warming** | ❌ | ✅ deterministic IDs preserve Anthropic prefix cache |
+| **Generic error extract** | Manual `rtk err <cmd>` | ✅ auto-detected when output is error-heavy |
+| **Diff function summary** | ❌ | ✅ `Changed: fn1, fn2` prepended on large diffs |
+| **Semantic Read** | ❌ | ✅ large code files → imports + signatures only |
+| **Stack trace dedup** | ❌ | ✅ repeated crash frames collapsed across log output |
+| **Multi-client** | Claude Code only | Claude Code, Codex, Gemini CLI, Ollama, Aider |
 
-**Used together:** RTK reduces what enters context initially. Squeezr compresses what accumulates over time. Typical session: without anything 200K tokens, with RTK ~130K, with RTK + Squeezr ~50-60K.
+### The key difference
+
+RTK filters what enters context on turn 1. Squeezr also does that — but it additionally compresses everything that accumulates over 30+ turns. In a long coding session, the savings compound: the system prompt is compressed, old file reads shrink, repeated stack traces collapse, and the KV cache cuts charges by 90% on unchanged history.
+
+Typical session (2 hours, 50+ tool calls): without compression ~200K tokens; RTK alone ~130K; Squeezr alone ~80K; RTK + Squeezr ~50K.
 
 ---
 
@@ -133,39 +173,34 @@ One proxy handles Anthropic, OpenAI, and Google APIs simultaneously. Other tools
 
 ---
 
-## Roadmap: what makes it genuinely unique
+## How session-level optimisations work
 
-Two features in development with no equivalent in any existing tool:
+### Differential Compression (shipped v1.1.0)
 
-### Differential Compression
+Every request re-sends the full conversation history. Without deduplication, a 50-tool-result session would run 50 Haiku compression calls on request #51 — even though 49 of them haven't changed.
 
-Today every request re-evaluates the entire message history. In a session with 50 tool results, request #51 still processes all 50 — even though 49 of them were already compressed last time.
-
-Differential compression tracks a hash of each message between requests. Only new or changed blocks go through the AI compression pipeline. In a long session, this reduces compression calls from O(N) per request to O(1–3) per request.
+Squeezr tracks a hash of each message in memory for the session lifetime. Blocks identical to the previous request skip the entire pipeline (preprocessing + AI call).
 
 ```
-Without diff compression:  request 51 → 50 Haiku calls
-With diff compression:     request 51 → 1 Haiku call (only the new block)
+Without session cache:  request 51 → up to 50 Haiku calls
+With session cache:     request 51 → 1 Haiku call (only the new block)
 ```
 
 In a 100-request session with 40 tool results: ~4,000 Haiku calls → ~200.
 
-### KV Cache Warming
+### KV Cache Warming (shipped v1.1.0)
 
-Claude charges 90% less for tokens already in its cache. The cache only activates when the message prefix is byte-for-byte identical between requests. The problem: compressing a tool result changes bytes at that position, breaking the cache for everything that follows it.
+Claude charges 90% less for tokens already in its prefix cache. The cache only activates when the message prefix is byte-for-byte identical between requests. Standard compression breaks this — compressing a block changes its bytes, invalidating the cache for everything that follows.
 
-KV cache warming fixes this by tracking which blocks haven't changed since the previous request and leaving them unmodified — even if they exceed the compression threshold. Only new blocks get compressed. The stable prefix maximizes cache hits on every request.
+Squeezr fixes this by assigning compressed blocks a deterministic MD5-based ID. Identical content always produces the same `[squeezr:id -ratio%]` string. Unchanged blocks produce identical bytes across requests, keeping the prefix stable.
 
 ```
-Without KV cache warming:
-  request N+1 → compressed block differs → cache miss on all subsequent tokens
-
-With KV cache warming:
-  request N+1 → unchanged blocks preserved → cache hit on entire prior history
-               → pay 10% of normal price for everything already seen
+Without KV warming:  request N+1 → new compressed bytes → cache miss on all subsequent tokens
+With KV warming:     request N+1 → same IDs for unchanged blocks → cache hit on entire history
+                                  → pay 10% of normal price for everything already seen
 ```
 
-These two features are orthogonal: differential compression reduces Haiku API calls, KV cache warming reduces Anthropic charges on the main model. Together they compound.
+These two optimisations are orthogonal: session cache reduces Haiku calls, KV warming reduces charges on the main model. Together they compound across a long session.
 
 ---
 
