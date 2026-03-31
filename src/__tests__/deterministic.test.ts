@@ -829,6 +829,89 @@ describe('preprocessForTool - generic error extractor', () => {
   })
 })
 
+// ── Stack trace deduplication (base pipeline) ────────────────────────────────
+
+describe('preprocess - stack trace deduplication', () => {
+  const FRAME = `    at connect (net.js:1001:12)\n    at Socket._handle.open (net.js:573:18)\n    at defaultTriggerAsyncIdScope (async_hooks.js:197:19)`
+
+  it('collapses repeated Node.js stack traces', () => {
+    const input = `Error: ECONNREFUSED\n${FRAME}\nError: ECONNREFUSED\n${FRAME}\nError: ECONNREFUSED\n${FRAME}`
+    const out = preprocess(input)
+    // Should only have one copy of the frames
+    expect((out.match(/at connect/g) ?? []).length).toBe(1)
+    expect(out).toContain('same 3-frame stack trace repeated')
+  })
+
+  it('leaves unique stack traces unchanged', () => {
+    const input = `Error: foo\n    at funcA (a.js:1:1)\n    at funcB (b.js:2:2)\nError: bar\n    at funcC (c.js:3:3)\n    at funcD (d.js:4:4)`
+    const out = preprocess(input)
+    expect(out).toContain('funcA')
+    expect(out).toContain('funcC')
+    expect(out).not.toContain('repeated')
+  })
+})
+
+// ── Diff function name summary ────────────────────────────────────────────────
+
+describe('preprocessForTool - git diff function summary', () => {
+  // Build a diff large enough to trigger the >100-line summary (101+ output lines)
+  const hunk = (fn: string, n: number) => `@@ -${n},5 +${n},5 @@ function ${fn}() {\n-  old${n}\n+  new${n}\n context${n}`
+  const largeDiff = [
+    'diff --git a/src/mod.ts b/src/mod.ts',
+    'index abc..def 100644',
+    '--- a/src/mod.ts',
+    '+++ b/src/mod.ts',
+    ...Array.from({ length: 35 }, (_, i) => hunk(`doWork${i}`, i * 10 + 1)),
+  ].join('\n')
+
+  it('prepends changed function names for large diffs', () => {
+    const out = preprocessForTool(largeDiff, 'Bash')
+    expect(out).toMatch(/^Changed: /)
+    expect(out).toContain('doWork0')
+    expect(out).toContain('doWork34')
+  })
+
+  it('does not prepend summary for small diffs', () => {
+    const smallDiff = `diff --git a/x.ts b/x.ts\nindex a..b 100644\n--- a/x.ts\n+++ b/x.ts\n@@ -1,3 +1,3 @@ function foo() {\n-old\n+new`
+    const out = preprocessForTool(smallDiff, 'Bash')
+    expect(out).not.toMatch(/^Changed:/)
+  })
+})
+
+// ── Semantic Read (code structure extraction) ─────────────────────────────────
+
+describe('preprocessForTool - semantic read', () => {
+  it('extracts TypeScript structure from large files', () => {
+    // Use unique lines so deduplicateLines doesn't collapse them
+    const impl = Array.from({ length: 520 }, (_, i) => `  const x${i} = computeExpensiveThing(${i})`).join('\n')
+    const tsFile = [
+      "import { foo } from './foo'",
+      "import { bar } from './bar'",
+      impl,
+      'export function processData(input: string): string {',
+      '  return input.trim()',
+      '}',
+      'export class Parser {',
+      '  parse() { return null }',
+      '}',
+    ].join('\n')
+    const out = preprocessForTool(tsFile, 'Read')
+    expect(out).toContain("import { foo }")
+    expect(out).toContain('export function processData')
+    expect(out).toContain('export class Parser')
+    expect(out).not.toContain('computeExpensiveThing')
+    expect(out).toContain('implementation lines omitted')
+  })
+
+  it('falls back to head+tail for non-code large files', () => {
+    // Use unique lines so deduplicateLines doesn't collapse them
+    const logFile = Array.from({ length: 600 }, (_, i) => `server log entry number ${i} processed`).join('\n')
+    const out = preprocessForTool(logFile, 'Read')
+    expect(out).toContain('lines omitted')
+    expect(out).not.toContain('implementation lines omitted')
+  })
+})
+
 // ── Unknown tool falls through to base pipeline ───────────────────────────────
 
 describe('preprocessForTool - unknown tool', () => {

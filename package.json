@@ -1,6 +1,6 @@
 {
   "name": "squeezr",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "AI proxy that compresses Claude Code, Codex, Aider, Gemini CLI and Ollama context windows to save thousands of tokens per session",
   "keywords": [
     "claude",

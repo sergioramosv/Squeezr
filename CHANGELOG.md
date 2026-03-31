@@ -2,6 +2,17 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.7.0] - 2026-04-01
+
+### Added
+- **Stack trace deduplication** — repeated Node.js/Python stack frames collapsed to `[same N-frame stack trace repeated]`; runs in base pipeline before per-tool patterns
+- **Git diff function summary** — large diffs (>100 output lines) get a `Changed: fn1, fn2, ...` prefix extracted from `@@` headers
+- **Semantic Read for large code files** — `.ts/.js/.py/.go/.rs` files >500 lines show imports + top-level signatures only, bodies omitted; smaller files keep head+tail
+- 6 new tests (180 total)
+
+### Changed
+- `deduplicateStackTraces` runs before `deduplicateLines` in base pipeline (block-level dedup must precede line-level dedup)
+
 ## [1.6.0] - 2026-03-31
 
 ### Added

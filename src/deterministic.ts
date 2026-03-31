@@ -69,6 +69,46 @@ function deduplicateLines(text: string): string {
   return out.join('\n')
 }
 
+function deduplicateStackTraces(text: string): string {
+  // Collapse identical multi-line stack trace blocks (Node.js "at " / Python "File ")
+  const isFrameLine = (l: string) => /^[ \t]{2,}(at |File "|in <)/.test(l)
+
+  type Chunk = { isStack: boolean; lines: string[] }
+  const chunks: Chunk[] = []
+  for (const line of text.split('\n')) {
+    const stack = isFrameLine(line)
+    if (!chunks.length || chunks[chunks.length - 1].isStack !== stack) {
+      chunks.push({ isStack: stack, lines: [line] })
+    } else {
+      chunks[chunks.length - 1].lines.push(line)
+    }
+  }
+
+  const stackChunks = chunks.filter(c => c.isStack && c.lines.length >= 3)
+  if (stackChunks.length === 0) return text
+
+  const counts = new Map<string, number>()
+  for (const c of stackChunks) {
+    const key = c.lines.join('\n')
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  if (![...counts.values()].some(v => v > 1)) return text
+
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const chunk of chunks) {
+    if (!chunk.isStack || chunk.lines.length < 3) { out.push(...chunk.lines); continue }
+    const key = chunk.lines.join('\n')
+    if (!seen.has(key)) {
+      seen.add(key)
+      out.push(...chunk.lines)
+    } else {
+      out.push(`  ... [same ${chunk.lines.length}-frame stack trace repeated]`)
+    }
+  }
+  return out.join('\n')
+}
+
 function minifyJson(text: string): string {
   return text.replace(/(\{[\s\S]{200,}?\})/g, (match) => {
     try { return JSON.stringify(JSON.parse(match)) } catch { return match }
@@ -87,6 +127,7 @@ export function preprocess(text: string): string {
   t = stripAnsi(t)
   t = stripProgressBars(t)
   t = stripTimestamps(t)
+  t = deduplicateStackTraces(t)
   t = deduplicateLines(t)
   t = minifyJson(t)
   t = collapseWhitespace(t)
@@ -149,17 +190,32 @@ function compactGitDiff(text: string): string {
   const lines = text.split('\n')
   const out: string[] = []
   let contextBudget = 0
+  const changedFns = new Set<string>()
+
   for (const line of lines) {
     if (line.startsWith('diff --git') || line.startsWith('index ') ||
         line.startsWith('--- ') || line.startsWith('+++ ')) {
       out.push(line); contextBudget = 0
     } else if (line.startsWith('@@')) {
       out.push(line); contextBudget = 1
+      // Extract function context from "@@ -l,s +l,s @@ funcName"
+      const fnCtx = line.match(/@{2}[^@]+@{2}\s+(.+)/)
+      if (fnCtx) {
+        const name = fnCtx[1].trim()
+          .replace(/^(export\s+)?(default\s+)?(async\s+)?(function\s+)?/, '')
+          .split(/[\s(:{<]/)[0]
+        if (name && /^\w/.test(name)) changedFns.add(name)
+      }
     } else if (line.startsWith('+') || line.startsWith('-')) {
       out.push(line); contextBudget = 1
     } else if (line.startsWith(' ') && contextBudget > 0) {
       out.push(line); contextBudget--
     }
+  }
+
+  // Prepend changed-function summary for large diffs
+  if (out.length > 100 && changedFns.size > 0) {
+    return `Changed: ${[...changedFns].join(', ')}\n` + out.join('\n')
   }
   return out.join('\n')
 }
@@ -755,6 +811,32 @@ function looksLikeLockfile(text: string): boolean {
   return text.includes('integrity sha') || text.includes('"resolved"') || text.includes('# yarn lockfile')
 }
 
+// Detect source language from first 30 lines of content
+function detectCodeLanguage(text: string): 'ts' | 'py' | 'go' | 'rs' | null {
+  const sample = text.split('\n').slice(0, 30).join('\n')
+  if (/^import .+ from ['"]|^export (function|class|const|type|interface|default)\b|: (string|number|boolean|void|unknown)\b/.test(sample)) return 'ts'
+  if (/^from \S+ import |^def \w+\(|^class \w+[:(]/.test(sample)) return 'py'
+  if (/^package \w+|^func \w+\(|^\s*import \(/.test(sample)) return 'go'
+  if (/^use (std|crate|self)::|^(pub\s+)?fn \w+\(|^impl\s+/.test(sample)) return 'rs'
+  return null
+}
+
+// Extract top-level structural lines (imports, signatures) — bodies omitted
+function extractCodeStructure(text: string, lang: 'ts' | 'py' | 'go' | 'rs'): string {
+  const lines = text.split('\n')
+  const checks: Record<string, (t: string) => boolean> = {
+    ts: (t) => /^(import |export |async function |function |class |const |let |var |type |interface |enum |@\w)/.test(t),
+    py: (t) => /^(import |from .+ import|def |class |@\w)/.test(t),
+    go: (t) => /^(import|func |type |var |const |package )\b/.test(t),
+    rs: (t) => /^(use |pub |fn |struct |enum |impl |trait |mod |const |static )\b/.test(t),
+  }
+  const check = checks[lang]
+  const structural = lines.filter(l => check(l))
+  if (structural.length < 2) return text  // not enough structure — fall through
+  const omitted = lines.length - structural.length
+  return structural.join('\n') + `\n... [${omitted} implementation lines omitted]`
+}
+
 function compactReadOutput(text: string): string {
   const lines = text.split('\n')
   if (lines.length <= READ_MAX_LINES) return text
@@ -763,6 +845,15 @@ function compactReadOutput(text: string): string {
   if (looksLikeLockfile(text)) {
     const pkgCount = (text.match(/^"?[a-z@]/gm) ?? []).length
     return `[lockfile — ${lines.length} lines, ~${pkgCount} packages — omitted to save tokens]`
+  }
+
+  // Very large code files (>500 lines): semantic structure extraction
+  if (lines.length > 500) {
+    const lang = detectCodeLanguage(text)
+    if (lang) {
+      const structured = extractCodeStructure(text, lang)
+      if (structured !== text) return structured
+    }
   }
 
   const head = lines.slice(0, READ_HEAD_LINES)
