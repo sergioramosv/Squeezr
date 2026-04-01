@@ -107,6 +107,67 @@ Your provider's API (Anthropic / OpenAI / Google / Ollama)
 
 Recent content is always preserved untouched — by default the last 3 tool results are never compressed. Your CLI always has full context for what it's currently working on.
 
+### Does compression make the AI "dumber"?
+
+No — it's the opposite. Without Squeezr, long sessions hit the context window limit and the CLI **silently drops old messages entirely**. You lose them with no way to get them back.
+
+With Squeezr, old messages are **summarized, not deleted**. A 3,000-token git diff from message #15 becomes a ~150-token summary like:
+
+```
+[squeezr:a3f2c1] git diff: modified src/auth.ts — validateToken:
+added expiry logging + refreshToken call. 3 files changed.
+```
+
+The AI knows *what* you did, not every exact line. And if it needs the full original, it calls `squeezr_expand(a3f2c1)` and gets it back — losslessly.
+
+| Scenario | Message #15 at turn #100 |
+|---|---|
+| **No compression** | Probably dropped by the CLI (doesn't fit) |
+| **With Squeezr** | Summarized but present, expandable on demand |
+
+The trade-off: less detail, but more memory. Without Squeezr the AI forgets entire messages. With Squeezr it has a one-line note about every decision made — and can retrieve the full context when needed.
+
+---
+
+## Deterministic compression engine
+
+Before any AI model is involved, Squeezr runs a full deterministic compression pipeline on every tool result. This is a zero-cost, zero-latency layer that handles the most common developer outputs with specialized parsers:
+
+| Tool output | What Squeezr does | Typical savings |
+|---|---|---|
+| **git status** | Parses staged/modified/untracked, drops noise lines | 70-85% |
+| **git diff** | Extracts changed function names, strips context lines (adaptive), summarizes large diffs | 65-92% |
+| **git log** | Compacts to `hash msg (author, date)`, caps entries by pressure | 70-90% |
+| **cargo test/build/clippy** | Extracts only failures, errors, warnings | 80-95% |
+| **vitest/jest/playwright** | Extracts failed tests and assertion errors | 80-95% |
+| **tsc** | Groups errors by file, keeps only error lines | 75-90% |
+| **eslint/biome** | Compacts to file + rule + message | 70-85% |
+| **prettier** | Keeps only files-changed summary | 80-90% |
+| **next build** | Extracts errors and route summary | 75-85% |
+| **pytest** | Extracts FAILED lines and short summaries | 80-95% |
+| **npm/pnpm install** | Strips progress bars, keeps final summary | 85-90% |
+| **npm outdated** | Compact table format | 60-75% |
+| **docker ps/images/logs** | Compact output, strips timestamps | 70-80% |
+| **kubectl get/describe/logs** | Strips timestamps, compacts tables | 70-80% |
+| **gh pr/run/issue** | Strips decorations, keeps data | 65-75% |
+| **curl/wget** | Strips progress, keeps response body/headers | 60-80% |
+| **terraform plan/apply** | Extracts changes summary | 70-85% |
+| **prisma** | Compacts migration and schema output | 65-80% |
+| **Grep results** | Groups by file, caps matches per file (adaptive) | 60-80% |
+| **Read (large files)** | >500 lines: imports + signatures only. >200 lines: head + tail | 70-95% |
+| **Glob** | Compacts file listings into directory summaries | 50-70% |
+
+Additionally, on **all** outputs regardless of tool:
+- ANSI escape codes stripped
+- Progress bars and spinners removed
+- Repeated lines collapsed (`"... repeated N more times"`)
+- Duplicate stack traces deduplicated (Node.js and Python)
+- Inline JSON minified (objects >200 chars)
+- Timestamps stripped (ISO 8601, bracketed, bare time formats)
+- Excessive whitespace collapsed
+
+This engine runs in pure Node.js — microseconds per result, no API calls, no cost. It handles the bulk of the compression work. The AI layer (Haiku/GPT-4o-mini) only kicks in afterward on older messages where further summarization is needed.
+
 ---
 
 ## Supported CLIs and providers
