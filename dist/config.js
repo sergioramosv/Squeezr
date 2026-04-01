@@ -1,16 +1,37 @@
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { parse } from 'smol-toml';
-const TOML_PATH = join(import.meta.dirname, '..', 'squeezr.toml');
-function loadToml() {
-    if (!existsSync(TOML_PATH))
+function loadTomlFile(path) {
+    if (!existsSync(path))
         return {};
     try {
-        return parse(readFileSync(TOML_PATH, 'utf-8'));
+        return parse(readFileSync(path, 'utf-8'));
     }
     catch {
         return {};
     }
+}
+function deepMerge(base, override) {
+    const result = { ...base };
+    for (const [k, v] of Object.entries(override)) {
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+            result[k] = { ...(result[k] ?? {}), ...v };
+        }
+        else if (v !== undefined) {
+            result[k] = v;
+        }
+    }
+    return result;
+}
+function loadToml() {
+    const globalPath = join(import.meta.dirname, '..', 'squeezr.toml');
+    const localPath = join(process.cwd(), '.squeezr.toml');
+    const globalCfg = loadTomlFile(globalPath);
+    const localCfg = loadTomlFile(localPath);
+    if (Object.keys(localCfg).length > 0) {
+        console.log(`[squeezr] Using project config: ${localPath}`);
+    }
+    return deepMerge(globalCfg, localCfg);
 }
 function env(key, fallback) {
     return process.env[key] ?? fallback;
@@ -23,6 +44,8 @@ export class Config {
     compressSystemPrompt;
     compressConversation;
     dryRun;
+    skipTools;
+    onlyTools;
     cacheEnabled;
     cacheMaxEntries;
     adaptiveEnabled;
@@ -48,6 +71,8 @@ export class Config {
         this.compressSystemPrompt = c.compress_system_prompt ?? true;
         this.compressConversation = c.compress_conversation ?? false;
         this.dryRun = env('SQUEEZR_DRY_RUN', '') === '1';
+        this.skipTools = new Set((c.skip_tools ?? []).map(t => t.toLowerCase()));
+        this.onlyTools = new Set((c.only_tools ?? []).map(t => t.toLowerCase()));
         this.cacheEnabled = ca.enabled ?? true;
         this.cacheMaxEntries = ca.max_entries ?? 1000;
         this.adaptiveEnabled = ad.enabled ?? true;
@@ -71,6 +96,12 @@ export class Config {
         if (pressure >= 0.50)
             return this.adaptiveMid;
         return this.adaptiveLow;
+    }
+    shouldSkipTool(toolName) {
+        const t = toolName.toLowerCase();
+        if (this.onlyTools.size > 0)
+            return !this.onlyTools.has(t);
+        return this.skipTools.has(t);
     }
     isLocalKey(key) {
         if (!this.localEnabled)

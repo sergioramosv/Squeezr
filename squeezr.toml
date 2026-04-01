@@ -7,6 +7,10 @@ keep_recent = 3          # how many recent tool results to leave untouched
 disabled = false
 compress_system_prompt = true   # compress system prompt after first request
 compress_conversation = false   # also compress old user/assistant messages (aggressive)
+# skip_tools = ["Read"]         # never compress these tool types (Bash, Read, Grep, Glob...)
+# only_tools = ["Bash"]         # only compress these tool types — overrides skip_tools
+# Per-command: add "# squeezr:skip" anywhere in a Bash command to skip that result:
+#   git diff HEAD~3  # squeezr:skip
 
 [cache]
 enabled = true

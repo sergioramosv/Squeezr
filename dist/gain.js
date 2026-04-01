@@ -27,21 +27,30 @@ const savedChars = data.total_saved_chars;
 const originalChars = data.total_original_chars;
 const CHARS_PER_TOKEN = 3.5;
 const savedTokens = Math.round(savedChars / CHARS_PER_TOKEN);
-const pct = originalChars > 0 ? Math.round((savedChars / originalChars) * 1000) / 10 : 0;
 const byTool = (data.by_tool ?? {});
+// Savings % on tool results only (what Squeezr actually compresses).
+// Using total context chars gives a misleadingly low number because the
+// denominator includes user messages, Claude responses, and history
+// re-sent on every request — none of which Squeezr touches.
+const toolOriginal = Object.values(byTool).reduce((s, d) => s + d.originalChars, 0);
+const toolSaved = Object.values(byTool).reduce((s, d) => s + d.savedChars, 0);
+const toolPct = toolOriginal > 0 ? Math.round((toolSaved / toolOriginal) * 1000) / 10 : 0;
+// Context reduction: how much smaller the overall payload became
+const ctxPct = originalChars > 0 ? Math.round((savedChars / originalChars) * 1000) / 10 : 0;
 console.log('┌─────────────────────────────────────────┐');
 console.log('│          Squeezr — Token Savings         │');
 console.log('├─────────────────────────────────────────┤');
-console.log(`│  Requests      ${String(requests).padEnd(26)}│`);
-console.log(`│  Saved chars   ${String(savedChars.toLocaleString()).padEnd(26)}│`);
-console.log(`│  Saved tokens  ${String(savedTokens.toLocaleString()).padEnd(26)}│`);
-console.log(`│  Savings       ${String(`${pct}%`).padEnd(26)}│`);
+console.log(`│  Requests         ${String(requests).padEnd(23)}│`);
+console.log(`│  Saved chars      ${String(savedChars.toLocaleString()).padEnd(23)}│`);
+console.log(`│  Saved tokens     ${String(savedTokens.toLocaleString()).padEnd(23)}│`);
+console.log(`│  Tool savings     ${String(`${toolPct}%`).padEnd(23)}│`);
+console.log(`│  Context reduction ${String(`${ctxPct}%`).padEnd(22)}│`);
 if (Object.keys(byTool).length > 0) {
     console.log('├─────────────────────────────────────────┤');
     console.log('│  By Tool                                 │');
-    for (const [tool, d] of Object.entries(byTool)) {
-        const toolPct = d.originalChars > 0 ? Math.round((d.savedChars / d.originalChars) * 1000) / 10 : 0;
-        const line = `  ${tool} (${d.count}x): -${toolPct}%`;
+    for (const [tool, d] of Object.entries(byTool).sort((a, b) => b[1].savedChars - a[1].savedChars)) {
+        const pct = d.originalChars > 0 ? Math.round((d.savedChars / d.originalChars) * 1000) / 10 : 0;
+        const line = `  ${tool} (${d.count}x): -${pct}%`;
         console.log(`│${line.padEnd(41)}│`);
     }
 }

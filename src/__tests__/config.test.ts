@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { Config } from '../config.js'
 
 // We test Config methods directly without relying on env vars or toml file
@@ -53,6 +53,61 @@ describe('Config.thresholdForPressure', () => {
     // 0.90 is critical band
     const at90 = config.thresholdForPressure(0.90)
     expect(justBelow90).toBeGreaterThanOrEqual(at90)
+  })
+})
+
+describe('Config.shouldSkipTool', () => {
+  function makeConfig(skip: string[], only: string[]) {
+    const config = new Config() as any
+    config.skipTools = new Set(skip.map(t => t.toLowerCase()))
+    config.onlyTools = new Set(only.map(t => t.toLowerCase()))
+    return config as Config
+  }
+
+  it('returns false for any tool when no lists are configured', () => {
+    const config = makeConfig([], [])
+    expect(config.shouldSkipTool('Bash')).toBe(false)
+    expect(config.shouldSkipTool('Read')).toBe(false)
+    expect(config.shouldSkipTool('Grep')).toBe(false)
+  })
+
+  it('skipTools: returns true for blacklisted tools', () => {
+    const config = makeConfig(['Read', 'Grep'], [])
+    expect(config.shouldSkipTool('Read')).toBe(true)
+    expect(config.shouldSkipTool('Grep')).toBe(true)
+    expect(config.shouldSkipTool('Bash')).toBe(false)
+  })
+
+  it('skipTools: comparison is case-insensitive', () => {
+    const config = makeConfig(['read'], [])
+    expect(config.shouldSkipTool('READ')).toBe(true)
+    expect(config.shouldSkipTool('Read')).toBe(true)
+    expect(config.shouldSkipTool('read')).toBe(true)
+  })
+
+  it('onlyTools: returns false for whitelisted tools', () => {
+    const config = makeConfig([], ['Bash'])
+    expect(config.shouldSkipTool('Bash')).toBe(false)
+  })
+
+  it('onlyTools: returns true (skip) for tools NOT in the whitelist', () => {
+    const config = makeConfig([], ['Bash'])
+    expect(config.shouldSkipTool('Read')).toBe(true)
+    expect(config.shouldSkipTool('Grep')).toBe(true)
+  })
+
+  it('onlyTools takes priority over skipTools', () => {
+    // Even if Read is in skipTools, onlyTools=[Bash] means only Bash is processed
+    const config = makeConfig(['Read'], ['Bash'])
+    expect(config.shouldSkipTool('Bash')).toBe(false)  // in onlyTools → don't skip
+    expect(config.shouldSkipTool('Read')).toBe(true)   // not in onlyTools → skip
+  })
+
+  it('default Config has empty skip/only sets', () => {
+    const config = new Config()
+    expect(config.skipTools.size).toBe(0)
+    expect(config.onlyTools.size).toBe(0)
+    expect(config.shouldSkipTool('Bash')).toBe(false)
   })
 })
 

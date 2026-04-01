@@ -1,6 +1,6 @@
 # RTK vs Squeezr — Comparación punto a punto
 
-> Última actualización: Squeezr v1.9.0
+> Última actualización: Squeezr v1.10.0
 
 ---
 
@@ -12,7 +12,7 @@
 | **Mecanismo** | Wrapper de comandos en el shell (`rtk git diff`) | Proxy HTTP local (`localhost:8080`) |
 | **Qué ve** | Solo la salida del comando actual | Todo el historial acumulado en la conversación |
 | **Cuándo actúa** | Turno 1 únicamente | Todos los turnos |
-| **Instalación** | Binario en PATH | `npm install -g squeezr` |
+| **Instalación** | Binario en PATH | `npm install -g squeezr-ai` |
 
 ---
 
@@ -24,6 +24,7 @@
 | **Cambios en el workflow** | Todos los comandos deben prefijarse | Cero cambios |
 | **Error humano** | Si olvidas `rtk`, no se comprime nada | Imposible olvidarlo |
 | **Comandos encadenados** | `rtk git add . && rtk git commit && rtk git push` | `git add . && git commit && git push` |
+| **Control explícito por tool** | Implícito (solo comprime con prefijo) | ✅ `skip_tools`/`only_tools` en config + `# squeezr:skip` por comando |
 
 ---
 
@@ -118,7 +119,8 @@ Ambos cubren los mismos ~30 patrones. Los checkmarks indican soporte:
 
 | Cliente | RTK | Squeezr |
 |---|---|---|
-| **Claude Code** | ✅ | ✅ |
+| **Claude Code** (API key) | ✅ | ✅ |
+| **Claude Code** (suscripción OAuth) | ❌ | ✅ — OAuth token reutilizado para Haiku |
 | **Codex CLI** | ❌ | ✅ (GPT-4o-mini) |
 | **Aider** (OpenAI o Anthropic) | ❌ | ✅ |
 | **OpenCode** | ❌ | ✅ |
@@ -169,8 +171,7 @@ Ambos cubren los mismos ~30 patrones. Los checkmarks indican soporte:
 
 **Elige RTK si:**
 - Quieres filtrar outputs de comandos específicos en el momento (turno 1)
-- Te gusta el control explícito sobre qué se comprime
-- Solo usas Claude Code
+- Solo usas Claude Code y prefieres prefijado manual
 
 **Elige Squeezr si:**
 - Quieres compresión automática sin cambiar nada en tu workflow

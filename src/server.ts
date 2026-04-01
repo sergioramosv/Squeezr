@@ -73,7 +73,12 @@ export const app = new Hono()
 
 app.post('/v1/messages', async (c) => {
   const body = await c.req.json<Record<string, unknown>>()
-  const apiKey = c.req.header('x-api-key') ?? process.env.ANTHROPIC_API_KEY ?? ''
+  // Support both API key (x-api-key: sk-ant-...) and OAuth bearer token
+  // (Authorization: Bearer ...) — Claude Code subscription uses OAuth
+  const apiKey = c.req.header('x-api-key')
+    ?? c.req.header('authorization')?.replace(/^bearer\s+/i, '').trim()
+    ?? process.env.ANTHROPIC_API_KEY
+    ?? ''
 
   // System prompt compression
   if (config.compressSystemPrompt && !config.dryRun && typeof body.system === 'string') {

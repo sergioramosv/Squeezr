@@ -12,3 +12,6 @@ export function setBlock(hash, block) {
 export function sessionCacheSize() {
     return cache.size;
 }
+export function clearSessionCache() {
+    cache.clear();
+}

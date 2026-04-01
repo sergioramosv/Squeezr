@@ -7,6 +7,8 @@ import { compressAnthropicMessages, compressOpenAIMessages, compressGeminiConten
 import { injectExpandToolAnthropic, injectExpandToolOpenAI, handleAnthropicExpandCall, handleOpenAIExpandCall, retrieveOriginal, expandStoreSize, } from './expand.js';
 import { compressSystemPrompt } from './systemPrompt.js';
 import { sessionCacheSize } from './sessionCache.js';
+import { detPatternHits } from './deterministic.js';
+import { VERSION } from './version.js';
 const ANTHROPIC_API = 'https://api.anthropic.com';
 const OPENAI_API = 'https://api.openai.com';
 const GOOGLE_API = 'https://generativelanguage.googleapis.com';
@@ -51,7 +53,12 @@ export const app = new Hono();
 // ── Anthropic / Claude Code ───────────────────────────────────────────────────
 app.post('/v1/messages', async (c) => {
     const body = await c.req.json();
-    const apiKey = c.req.header('x-api-key') ?? process.env.ANTHROPIC_API_KEY ?? '';
+    // Support both API key (x-api-key: sk-ant-...) and OAuth bearer token
+    // (Authorization: Bearer ...) — Claude Code subscription uses OAuth
+    const apiKey = c.req.header('x-api-key')
+        ?? c.req.header('authorization')?.replace(/^bearer\s+/i, '').trim()
+        ?? process.env.ANTHROPIC_API_KEY
+        ?? '';
     // System prompt compression
     if (config.compressSystemPrompt && !config.dryRun && typeof body.system === 'string') {
         body.system = await compressSystemPrompt(body.system, apiKey, 'haiku');
@@ -213,10 +220,10 @@ app.post('/v1beta/models/*', async (c) => {
 });
 // ── Squeezr internal endpoints ────────────────────────────────────────────────
 app.get('/squeezr/stats', (c) => {
-    return c.json({ ...stats.summary(), cache: getCache(config).stats(), expand_store_size: expandStoreSize(), session_cache_size: sessionCacheSize(), dry_run: config.dryRun });
+    return c.json({ ...stats.summary(), cache: getCache(config).stats(), expand_store_size: expandStoreSize(), session_cache_size: sessionCacheSize(), dry_run: config.dryRun, pattern_hits: detPatternHits });
 });
 app.get('/squeezr/health', (c) => {
-    return c.json({ status: 'ok', version: '1.0.0' });
+    return c.json({ status: 'ok', version: VERSION });
 });
 app.get('/squeezr/expand/:id', (c) => {
     const id = c.req.param('id');

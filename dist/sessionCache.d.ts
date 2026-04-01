@@ -27,3 +27,4 @@ export declare function hashText(text: string): string;
 export declare function getBlock(hash: string): SessionBlock | undefined;
 export declare function setBlock(hash: string, block: SessionBlock): void;
 export declare function sessionCacheSize(): number;
+export declare function clearSessionCache(): void;

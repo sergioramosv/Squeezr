@@ -1,8 +1,16 @@
 # Squeezr installer for Windows
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Requires: Node.js 18+, npm install -g squeezr-ai already done (or run from repo)
 
-Write-Host "Installing Squeezr from $ScriptDir..."
-pip install -r "$ScriptDir\requirements.txt"
+$TaskName = "Squeezr"
+
+# Resolve squeezr binary
+$SqueezrExe = (Get-Command squeezr -ErrorAction SilentlyContinue)?.Source
+if (-not $SqueezrExe) {
+    Write-Host "ERROR: 'squeezr' not found in PATH. Run: npm install -g squeezr-ai" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "Found Squeezr at: $SqueezrExe"
 
 # Set ANTHROPIC_BASE_URL as persistent user env var
 $existing = [System.Environment]::GetEnvironmentVariable("ANTHROPIC_BASE_URL", "User")
@@ -13,26 +21,26 @@ if (-not $existing) {
     Write-Host "ANTHROPIC_BASE_URL already set to: $existing"
 }
 
-# Auto-start via Windows Task Scheduler
-$TaskName = "Squeezr"
-$PythonExe = (Get-Command python).Source
-$MainScript = Join-Path $ScriptDir "main.py"
-
+# Register Task Scheduler task (auto-start on login, restart on failure)
 $existing_task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($existing_task) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    Write-Host "Replaced existing Squeezr task."
 }
 
-$action  = New-ScheduledTaskAction -Execute $PythonExe -Argument "`"$MainScript`"" -WorkingDirectory $ScriptDir
-$trigger = New-ScheduledTaskTrigger -AtLogon
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+$action   = New-ScheduledTaskAction -Execute $SqueezrExe -Argument "start"
+$trigger  = New-ScheduledTaskTrigger -AtLogon
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1)
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -Force | Out-Null
 
-# Start it now
+# Start it now without waiting for next login
 Start-ScheduledTask -TaskName $TaskName
 
-Write-Host "Auto-start configured via Task Scheduler."
 Write-Host ""
-Write-Host "Done. Squeezr is running."
-Write-Host "Restart your terminal for env var to take effect."
+Write-Host "Done. Squeezr is running and will auto-start on every login." -ForegroundColor Green
+Write-Host "Restart your terminal for ANTHROPIC_BASE_URL to take effect."
+Write-Host ""
+Write-Host "To check status:  Get-ScheduledTask -TaskName Squeezr"
+Write-Host "To stop:          Stop-ScheduledTask -TaskName Squeezr"
+Write-Host "To uninstall:     Unregister-ScheduledTask -TaskName Squeezr -Confirm:`$false"

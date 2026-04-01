@@ -26,6 +26,8 @@
  *      Read — truncate huge files (logs, lockfiles), keep head + tail
  *      Glob — compact large file listings into directory summary
  */
+export declare const detPatternHits: Record<string, number>;
+export declare function hitPattern(pattern: string, count?: number): void;
 export declare function preprocess(text: string): string;
 export declare function preprocessRatio(original: string, processed: string): number;
 /**
@@ -34,4 +36,4 @@ export declare function preprocessRatio(original: string, processed: string): nu
  * Called on ALL tool results including recent ones — covers turn-1 compression
  * without the user needing to prefix commands with `rtk`.
  */
-export declare function preprocessForTool(text: string, toolName: string): string;
+export declare function preprocessForTool(text: string, toolName: string, pressure?: number): string;

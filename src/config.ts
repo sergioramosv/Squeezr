@@ -10,6 +10,8 @@ interface TomlConfig {
     disabled?: boolean
     compress_system_prompt?: boolean
     compress_conversation?: boolean
+    skip_tools?: string[]
+    only_tools?: string[]
   }
   cache?: { enabled?: boolean; max_entries?: number }
   adaptive?: {
@@ -71,6 +73,8 @@ export class Config {
   readonly compressSystemPrompt: boolean
   readonly compressConversation: boolean
   readonly dryRun: boolean
+  readonly skipTools: Set<string>
+  readonly onlyTools: Set<string>
   readonly cacheEnabled: boolean
   readonly cacheMaxEntries: number
   readonly adaptiveEnabled: boolean
@@ -98,6 +102,8 @@ export class Config {
     this.compressSystemPrompt = c.compress_system_prompt ?? true
     this.compressConversation = c.compress_conversation ?? false
     this.dryRun = env('SQUEEZR_DRY_RUN', '') === '1'
+    this.skipTools = new Set((c.skip_tools ?? []).map(t => t.toLowerCase()))
+    this.onlyTools = new Set((c.only_tools ?? []).map(t => t.toLowerCase()))
     this.cacheEnabled = ca.enabled ?? true
     this.cacheMaxEntries = ca.max_entries ?? 1000
     this.adaptiveEnabled = ad.enabled ?? true
@@ -118,6 +124,12 @@ export class Config {
     if (pressure >= 0.75) return this.adaptiveHigh
     if (pressure >= 0.50) return this.adaptiveMid
     return this.adaptiveLow
+  }
+
+  shouldSkipTool(toolName: string): boolean {
+    const t = toolName.toLowerCase()
+    if (this.onlyTools.size > 0) return !this.onlyTools.has(t)
+    return this.skipTools.has(t)
   }
 
   isLocalKey(key: string): boolean {

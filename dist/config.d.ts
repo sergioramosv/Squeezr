@@ -6,6 +6,8 @@ export declare class Config {
     readonly compressSystemPrompt: boolean;
     readonly compressConversation: boolean;
     readonly dryRun: boolean;
+    readonly skipTools: Set<string>;
+    readonly onlyTools: Set<string>;
     readonly cacheEnabled: boolean;
     readonly cacheMaxEntries: number;
     readonly adaptiveEnabled: boolean;
@@ -19,6 +21,7 @@ export declare class Config {
     readonly localDummyKeys: Set<string>;
     constructor();
     thresholdForPressure(pressure: number): number;
+    shouldSkipTool(toolName: string): boolean;
     isLocalKey(key: string): boolean;
 }
 export declare const config: Config;

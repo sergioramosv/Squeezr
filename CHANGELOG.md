@@ -2,6 +2,24 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.10.1] - 2026-04-01
+
+### Added
+- **`squeezr setup`** — one-command setup on any OS. Sets `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GEMINI_API_BASE_URL` permanently and registers Squeezr as a login service (Task Scheduler on Windows, launchd on macOS, systemd on Linux). After running `squeezr setup` once and restarting the terminal, everything works automatically.
+
+## [1.10.0] - 2026-04-01
+
+### Added
+- **OAuth / subscription support** — Claude Code via claude.ai subscription (no API key) now works fully. Squeezr extracts the `Authorization: Bearer` token and reuses it for Haiku compression calls, so no extra credentials are needed regardless of how you authenticate.
+- **`skip_tools` / `only_tools` config** — explicit control over which tools Squeezr compresses. `skip_tools = ["Read"]` blacklists specific tools; `only_tools = ["Bash"]` whitelists (takes priority over skip_tools).
+- **`# squeezr:skip` inline marker** — add anywhere in a Bash command to prevent that specific result from being compressed (e.g. `git diff HEAD~3  # squeezr:skip`). Supported in Anthropic and OpenAI formats.
+- **10 new tests** — `shouldSkipTool` logic in config (7 cases), skip/only/inline-skip in compressor (3 cases) (190 total)
+
+### Changed
+- `Config.shouldSkipTool(name)` method: checks `onlyTools` whitelist first, then `skipTools` blacklist
+- `squeezr.toml`: added commented-out examples for `skip_tools`, `only_tools`, and inline `# squeezr:skip`
+- Published as `squeezr-ai` on npm (name `squeezr` was taken by an unrelated image tool)
+
 ## [1.9.0] - 2026-04-01
 
 ### Fixed

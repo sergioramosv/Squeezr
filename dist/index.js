@@ -1,9 +1,10 @@
 import { serve } from '@hono/node-server';
 import { app, stats } from './server.js';
 import { config } from './config.js';
+import { VERSION } from './version.js';
 const PORT = config.port;
 serve({ fetch: app.fetch, port: PORT }, () => {
-    console.log(`Squeezr v1.3.0 listening on http://localhost:${PORT}`);
+    console.log(`Squeezr v${VERSION} listening on http://localhost:${PORT}`);
     console.log(`Mode: ${config.dryRun ? 'dry-run' : 'active'}`);
     if (config.disabled)
         console.log('WARNING: compression is disabled');

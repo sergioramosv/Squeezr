@@ -49,7 +49,8 @@ export async function compressSystemPrompt(
     const input = `${PROMPT}\n\n---\n${prompt.slice(0, 10000)}`
 
     if (backend === 'haiku') {
-      const client = new Anthropic({ apiKey })
+      const authOpts = apiKey.startsWith('sk-') ? { apiKey } : { authToken: apiKey }
+      const client = new Anthropic(authOpts)
       const resp = await client.messages.create({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 700,

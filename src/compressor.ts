@@ -36,7 +36,11 @@ function estimatePressure(messages: unknown[]): number {
 // ── Compression backends ──────────────────────────────────────────────────────
 
 async function compressWithHaiku(text: string, apiKey: string): Promise<string> {
-  const client = new Anthropic({ apiKey })
+  // apiKey can be either a real API key (sk-ant-...) or an OAuth bearer token.
+  // The Anthropic SDK accepts both: apiKey → x-api-key header,
+  // authToken → Authorization: Bearer header.
+  const authOpts = apiKey.startsWith('sk-') ? { apiKey } : { authToken: apiKey }
+  const client = new Anthropic(authOpts)
   const resp = await client.messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 300,
@@ -46,6 +50,7 @@ async function compressWithHaiku(text: string, apiKey: string): Promise<string> 
 }
 
 async function compressWithGptMini(text: string, apiKey: string): Promise<string> {
+  // apiKey can be a real key (sk-...) or an OAuth bearer token
   const client = new OpenAI({ apiKey })
   const resp = await client.chat.completions.create({
     model: 'gpt-4o-mini',
@@ -126,7 +131,7 @@ interface AnthropicMessage {
 function extractAnthropicToolResults(
   messages: AnthropicMessage[],
   toolIdMap: Map<string, string>,
-): Array<{ index: number; subIndex: number; text: string; tool: string }> {
+): Array<{ index: number; subIndex: number; text: string; tool: string; toolUseId: string }> {
   const results = []
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
@@ -138,25 +143,28 @@ function extractAnthropicToolResults(
         : Array.isArray(block.content) ? (block.content as Array<{ type?: string; text?: string }>)
             .filter(b => b.type === 'text').map(b => b.text ?? '').join('\n')
         : ''
+      const toolUseId = block.tool_use_id ?? ''
       if (text.length > 0) {
-        results.push({ index: i, subIndex: j, text, tool: toolIdMap.get(block.tool_use_id ?? '') ?? 'unknown' })
+        results.push({ index: i, subIndex: j, text, tool: toolIdMap.get(toolUseId) ?? 'unknown', toolUseId })
       }
     }
   }
   return results
 }
 
-function buildAnthropicToolIdMap(messages: AnthropicMessage[]): Map<string, string> {
-  const map = new Map<string, string>()
+function buildAnthropicToolIdMap(messages: AnthropicMessage[]): { nameMap: Map<string, string>; skipIds: Set<string> } {
+  const nameMap = new Map<string, string>()
+  const skipIds = new Set<string>()
   for (const msg of messages) {
     if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue
     for (const block of msg.content) {
-      if (block.type === 'tool_use' && 'id' in block && 'name' in block) {
-        map.set(block.id as string, block.name as string)
-      }
+      if (block.type !== 'tool_use' || !('id' in block) || !('name' in block)) continue
+      const id = block.id as string
+      nameMap.set(id, block.name as string)
+      if (/squeezr:\s*skip/i.test(JSON.stringify((block as Record<string, unknown>).input ?? ''))) skipIds.add(id)
     }
   }
-  return map
+  return { nameMap, skipIds }
 }
 
 export async function compressAnthropicMessages(
@@ -168,8 +176,9 @@ export async function compressAnthropicMessages(
 
   const pressure = estimatePressure(messages)
   const threshold = config.thresholdForPressure(pressure)
-  const toolIdMap = buildAnthropicToolIdMap(messages)
+  const { nameMap: toolIdMap, skipIds } = buildAnthropicToolIdMap(messages)
   const allResults = extractAnthropicToolResults(messages, toolIdMap)
+    .filter(r => !skipIds.has(r.toolUseId) && !config.shouldSkipTool(r.tool))
 
   if (allResults.length === 0) return [messages, emptySavings()]
 
@@ -292,18 +301,23 @@ interface OpenAIMessage {
   tool_calls?: Array<{ id: string; function: { name: string } }>
 }
 
-function extractOpenAIToolResults(messages: OpenAIMessage[]): Array<{ index: number; text: string; tool: string }> {
+function extractOpenAIToolResults(messages: OpenAIMessage[]): Array<{ index: number; text: string; tool: string; skip: boolean }> {
   const nameMap = new Map<string, string>()
+  const skipCallIds = new Set<string>()
   for (const msg of messages) {
     if (msg.role !== 'assistant') continue
-    for (const tc of msg.tool_calls ?? []) nameMap.set(tc.id, tc.function.name)
+    for (const tc of msg.tool_calls ?? []) {
+      nameMap.set(tc.id, tc.function.name)
+      if (/squeezr:\s*skip/i.test((tc.function as Record<string, unknown>).arguments as string ?? '')) skipCallIds.add(tc.id)
+    }
   }
   const results = []
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
     if (msg.role !== 'tool' || !msg.content) continue
     const text = typeof msg.content === 'string' ? msg.content : ''
-    if (text) results.push({ index: i, text, tool: nameMap.get(msg.tool_call_id ?? '') ?? 'unknown' })
+    const callId = msg.tool_call_id ?? ''
+    if (text) results.push({ index: i, text, tool: nameMap.get(callId) ?? 'unknown', skip: skipCallIds.has(callId) })
   }
   return results
 }
@@ -319,6 +333,7 @@ export async function compressOpenAIMessages(
   const pressure = estimatePressure(messages)
   const threshold = config.thresholdForPressure(pressure)
   const allResults = extractOpenAIToolResults(messages)
+    .filter(r => !r.skip && !config.shouldSkipTool(r.tool))
 
   if (allResults.length === 0) return [messages, emptySavings()]
 
@@ -440,10 +455,12 @@ export async function compressGeminiContents(
     for (let j = 0; j < contents[i].parts.length; j++) {
       const part = contents[i].parts[j]
       if (!part.functionResponse) continue
+      const tool = part.functionResponse.name
+      if (config.shouldSkipTool(tool)) continue
       const text = typeof part.functionResponse.response === 'string'
         ? part.functionResponse.response
         : JSON.stringify(part.functionResponse.response)
-      if (text.length > 0) allResults.push({ index: i, subIndex: j, text, tool: part.functionResponse.name })
+      if (text.length > 0) allResults.push({ index: i, subIndex: j, text, tool })
     }
   }
 

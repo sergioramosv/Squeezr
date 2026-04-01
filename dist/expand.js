@@ -30,6 +30,9 @@ export function retrieveOriginal(id) {
 export function expandStoreSize() {
     return store.size;
 }
+export function clearExpandStore() {
+    store.clear();
+}
 // ── Tool definitions ──────────────────────────────────────────────────────────
 export const EXPAND_TOOL_ANTHROPIC = {
     name: 'squeezr_expand',

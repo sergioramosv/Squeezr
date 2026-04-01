@@ -1,6 +1,7 @@
 export declare function storeOriginal(original: string): string;
 export declare function retrieveOriginal(id: string): string | undefined;
 export declare function expandStoreSize(): number;
+export declare function clearExpandStore(): void;
 export declare const EXPAND_TOOL_ANTHROPIC: {
     name: string;
     description: string;

@@ -57,6 +57,9 @@ const baseConfig = {
   localCompressionModel: 'qwen2.5-coder:1.5b',
   thresholdForPressure: () => 50,
   isLocalKey: () => false,
+  shouldSkipTool: () => false,
+  skipTools: new Set<string>(),
+  onlyTools: new Set<string>(),
 } as any
 
 beforeEach(() => {
@@ -284,6 +287,62 @@ describe('compressGeminiContents', () => {
     expect(savings.dryRun).toBe(true)
     const response = (result[1] as any).parts[0].functionResponse.response
     expect(response).toBe(longText)
+  })
+})
+
+// ── skip_tools / only_tools / squeezr:skip ────────────────────────────────────
+
+describe('skip_tools and squeezr:skip', () => {
+  function makeMessages(toolName: string, text: string) {
+    return [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'tool_0', name: toolName }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool_0', content: text }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'tool_1', name: toolName }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool_1', content: text }] },
+    ]
+  }
+
+  it('skips tool when shouldSkipTool returns true', async () => {
+    const longText = 'x'.repeat(200)
+    const msgs = makeMessages('Read', longText)
+    const skipConfig = { ...baseConfig, shouldSkipTool: (t: string) => t.toLowerCase() === 'read' }
+    const [result, savings] = await compressAnthropicMessages(msgs as any, 'key', skipConfig)
+    expect(savings.compressed).toBe(0)
+    expect((result[1] as any).content[0].content).toBe(longText)
+  })
+
+  it('compresses tool when shouldSkipTool returns false', async () => {
+    const longText = 'x'.repeat(200)
+    const msgs = makeMessages('Bash', longText)
+    const [, savings] = await compressAnthropicMessages(msgs as any, 'key', baseConfig)
+    expect(savings.compressed).toBe(1)
+  })
+
+  it('respects squeezr:skip inline marker — does not compress that block', async () => {
+    const longText = 'x'.repeat(200)
+    // 3 tool calls: tool_0 (skip marker), tool_1 (old, compressible), tool_2 (recent, kept)
+    const msgs = [
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tool_0', name: 'Bash', input: { command: 'git diff HEAD~3  # squeezr:skip' } }],
+      },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool_0', content: longText }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tool_1', name: 'Bash', input: { command: 'some other command' } }],
+      },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool_1', content: longText }] },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'tool_2', name: 'Bash', input: { command: 'another command' } }],
+      },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool_2', content: longText }] },
+    ]
+    const [result, savings] = await compressAnthropicMessages(msgs as any, 'key', baseConfig)
+    // tool_0 has squeezr:skip → not compressed
+    expect((result[1] as any).content[0].content).toBe(longText)
+    // tool_1 is old and not skipped → compressed
+    expect(savings.compressed).toBe(1)
   })
 })
 
