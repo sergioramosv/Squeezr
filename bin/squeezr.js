@@ -425,16 +425,16 @@ function setupWSL() {
     fs.appendFileSync(profile, `\n${shellBlock}\n`)
     console.log(`  [ok] Env vars + auto-heal added to ${profile}`)
   } else {
-    // Update existing block to include auto-heal if missing
-    if (!existing.includes('squeezr auto-heal')) {
+    // Update existing block if missing MITM proxy vars
+    if (!existing.includes('SSL_CERT_FILE') || !existing.includes('HTTPS_PROXY')) {
       const updatedContent = existing.replace(
-        /# squeezr env vars\n(?:export [A-Z_]+=http:\/\/localhost:\d+\n?)*/,
+        /# squeezr env vars[\s\S]*?fi\n/,
         shellBlock + '\n'
       )
       fs.writeFileSync(profile, updatedContent)
-      console.log(`  [ok] Auto-heal guard added to ${profile}`)
+      console.log(`  [ok] Shell profile updated with MITM proxy vars`)
     } else {
-      console.log(`  [skip] Env vars + auto-heal already in ${profile}`)
+      console.log(`  [skip] Env vars already in ${profile}`)
     }
   }
 
