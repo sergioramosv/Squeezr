@@ -3,7 +3,8 @@ export declare class CompressionCache {
     private store;
     private hits;
     private misses;
-    constructor(maxEntries: number);
+    private readonly cachePath;
+    constructor(maxEntries: number, cachePath?: string);
     private key;
     get(text: string): string | undefined;
     set(text: string, compressed: string): void;

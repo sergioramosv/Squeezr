@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { stream } from 'hono/streaming'
 import { config } from './config.js'
 import { Stats } from './stats.js'
@@ -291,13 +291,28 @@ app.get('/squeezr/expand/:id', (c) => {
   return c.json({ id, content: original })
 })
 
+// ── OAuth token refresh proxy (Codex: set CODEX_REFRESH_TOKEN_URL_OVERRIDE=http://localhost:PORT/oauth/token) ──
+
+app.post('/oauth/token', async (c) => {
+  const body = await c.req.arrayBuffer()
+  const resp = await fetch('https://auth.openai.com/oauth/token', {
+    method: 'POST',
+    headers: { 'content-type': c.req.header('content-type') ?? 'application/json' },
+    body,
+  })
+  const data = await resp.arrayBuffer()
+  return c.body(data, resp.status as any, { 'content-type': 'application/json' })
+})
+
+
 // ── Catch-all ─────────────────────────────────────────────────────────────────
 
 app.all('*', async (c) => {
   const upstream = detectUpstream(c.req.raw.headers)
   const url = new URL(c.req.url)
-  const targetPath = url.pathname === '/responses' ? '/v1/responses' : url.pathname
-  const targetUrl = `${upstream}${targetPath}${url.search}`
+  const NEEDS_V1 = new Set(['/models', '/engines', '/files', '/embeddings', '/moderations', '/completions', '/edits'])
+  const pathname = NEEDS_V1.has(url.pathname) ? `/v1${url.pathname}` : url.pathname
+  const targetUrl = `${upstream}${pathname}${url.search}`
   const body = await c.req.arrayBuffer()
   const fwdHeaders = forwardHeaders(c.req.raw.headers)
 
@@ -310,6 +325,18 @@ app.all('*', async (c) => {
   const respHeaders: Record<string, string> = {}
   for (const [k, v] of resp.headers.entries()) {
     if (!SKIP_RESP_HEADERS.has(k.toLowerCase())) respHeaders[k] = v
+  }
+
+  const contentType = resp.headers.get('content-type') ?? ''
+  if (contentType.includes('text/event-stream')) {
+    return stream(c, async (s) => {
+      const reader = resp.body!.getReader()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        await s.write(value)
+      }
+    })
   }
   return c.body(await resp.arrayBuffer(), resp.status as any, respHeaders)
 })

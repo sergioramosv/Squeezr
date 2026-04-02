@@ -177,7 +177,7 @@ Squeezr auto-detects which provider each request targets from the auth headers. 
 | CLI | Set this env var | Compresses with | Extra keys needed |
 |---|---|---|---|
 | **Claude Code** | `ANTHROPIC_BASE_URL=http://localhost:8080` | Claude Haiku | None |
-| **Codex CLI** | `openai_base_url=http://localhost:8080` | GPT-4o-mini | None |
+| **Codex CLI** | `squeezr setup` (see below) | gpt-5.4-mini (via your Codex sub) | None |
 | **Aider** (OpenAI backend) | `openai_base_url=http://localhost:8080` | GPT-4o-mini | None |
 | **Aider** (Anthropic backend) | `ANTHROPIC_BASE_URL=http://localhost:8080` | Claude Haiku | None |
 | **OpenCode** | `openai_base_url=http://localhost:8080` | GPT-4o-mini | None |
@@ -202,7 +202,11 @@ Then point your CLI at the proxy:
 export ANTHROPIC_BASE_URL=http://localhost:8080        # macOS / Linux
 $env:ANTHROPIC_BASE_URL="http://localhost:8080"        # Windows PowerShell
 
-# Codex / Aider / OpenCode
+# Codex (uses MITM proxy — see "Codex deep compression" below)
+export HTTPS_PROXY=http://localhost:8081
+export SSL_CERT_FILE=~/.squeezr/mitm-ca/bundle.crt
+
+# Aider / OpenCode
 export openai_base_url=http://localhost:8080
 
 # Gemini CLI
@@ -413,6 +417,44 @@ squeezr discover
 ```
 
 Shows which deterministic patterns fired, how many outputs hit the AI fallback, and the Read/Grep/Glob breakdown. Useful for spotting coverage gaps or misconfigured skip lists.
+
+---
+
+## Codex deep compression
+
+Codex CLI talks to `chatgpt.com` over WebSocket, not the standard OpenAI API. This means a regular HTTP proxy can't inspect or modify the traffic. Squeezr solves this with a TLS-terminating MITM proxy on port 8081.
+
+### How it works
+
+1. `squeezr setup` generates a local CA and configures `HTTPS_PROXY` + `SSL_CERT_FILE` in your shell
+2. When Codex connects to `chatgpt.com`, Squeezr intercepts the TLS tunnel and generates a per-host certificate signed by the local CA
+3. Squeezr strips `permessage-deflate` from the WebSocket handshake so frames arrive as plain JSON
+4. On every client-to-server WebSocket frame, Squeezr looks for `function_call_output` messages (tool results) exceeding the compression threshold
+5. For each large tool result, Squeezr opens a **separate** WebSocket to `chatgpt.com/backend-api/codex/responses` using the same OAuth token, and asks `gpt-5.4-mini` to summarize it
+6. The compressed output replaces the original in the frame before forwarding to the server
+
+### Setup
+
+```bash
+squeezr setup   # auto-configures everything (HTTPS_PROXY, SSL_CERT_FILE, CA)
+```
+
+Or manually:
+
+```bash
+export HTTPS_PROXY=http://localhost:8081
+export SSL_CERT_FILE=~/.squeezr/mitm-ca/bundle.crt
+```
+
+### What it costs
+
+Nothing extra. The compression calls use `gpt-5.4-mini` through the same ChatGPT WebSocket endpoint that your Codex subscription already covers. No API key required.
+
+### Results
+
+In testing, Codex tool results (file reads, command output) are compressed by **80-90%** per turn. A typical file read of 5,000 chars compresses to ~700 chars, saving thousands of tokens across a session.
+
+For a detailed technical explanation, see [CODEX.md](CODEX.md).
 
 ---
 

@@ -2,14 +2,16 @@ import { createHash } from 'crypto';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-const CACHE_FILE = join(homedir(), '.squeezr', 'cache.json');
+const DEFAULT_CACHE_PATH = join(homedir(), '.squeezr', 'cache.json');
 export class CompressionCache {
     maxEntries;
     store = new Map();
     hits = 0;
     misses = 0;
-    constructor(maxEntries) {
+    cachePath;
+    constructor(maxEntries, cachePath = DEFAULT_CACHE_PATH) {
         this.maxEntries = maxEntries;
+        this.cachePath = cachePath;
         this.load();
     }
     key(text) {
@@ -44,8 +46,8 @@ export class CompressionCache {
     }
     load() {
         try {
-            if (existsSync(CACHE_FILE)) {
-                const raw = JSON.parse(readFileSync(CACHE_FILE, 'utf-8'));
+            if (existsSync(this.cachePath)) {
+                const raw = JSON.parse(readFileSync(this.cachePath, 'utf-8'));
                 for (const [k, v] of Object.entries(raw)) {
                     this.store.set(k, v);
                 }
@@ -58,7 +60,7 @@ export class CompressionCache {
             const dir = join(homedir(), '.squeezr');
             if (!existsSync(dir))
                 mkdirSync(dir, { recursive: true });
-            writeFileSync(CACHE_FILE, JSON.stringify(Object.fromEntries(this.store)));
+            writeFileSync(this.cachePath, JSON.stringify(Object.fromEntries(this.store)));
         }
         catch { /* ignore */ }
     }

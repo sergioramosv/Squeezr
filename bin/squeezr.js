@@ -254,11 +254,15 @@ function setupUnix() {
   // 1. Set env vars + auto-heal guard in shell profile
   const distIndex = path.join(ROOT, 'dist', 'index.js')
   const port = process.env.SQUEEZR_PORT || 8080
+  const mitmPort = Number(port) + 1
+  const bundlePath = path.join(os.homedir(), '.squeezr', 'mitm-ca', 'bundle.crt')
   const shellBlock = [
     `# squeezr env vars`,
     `export ANTHROPIC_BASE_URL=http://localhost:${port}`,
     `export openai_base_url=http://localhost:${port}`,
     `export GEMINI_API_BASE_URL=http://localhost:${port}`,
+    `export HTTPS_PROXY=http://localhost:${mitmPort}`,
+    `export SSL_CERT_FILE=${bundlePath}`,
     `# squeezr auto-heal: start proxy if not running`,
     `if ! curl -sf http://localhost:${port}/squeezr/health >/dev/null 2>&1; then`,
     `  nohup ${nodeExe} ${distIndex} >> "${os.homedir()}/.squeezr/squeezr.log" 2>&1 &`,
@@ -381,11 +385,15 @@ function setupWSL() {
   //    it in the background. This is the safety net for WSL2 where systemd and
   //    Task Scheduler may both fail.
   const port = process.env.SQUEEZR_PORT || 8080
+  const mitmPort = Number(port) + 1
+  const bundlePath = path.join(os.homedir(), '.squeezr', 'mitm-ca', 'bundle.crt')
   const shellBlock = [
     `# squeezr env vars`,
     `export ANTHROPIC_BASE_URL=http://localhost:${port}`,
     `export openai_base_url=http://localhost:${port}`,
     `export GEMINI_API_BASE_URL=http://localhost:${port}`,
+    `export HTTPS_PROXY=http://localhost:${mitmPort}`,
+    `export SSL_CERT_FILE=${bundlePath}`,
     `# squeezr auto-heal: start proxy if not running`,
     `if ! curl -sf http://localhost:${port}/squeezr/health >/dev/null 2>&1; then`,
     `  nohup ${nodeExe} ${distIndex} >> "${os.homedir()}/.squeezr/squeezr.log" 2>&1 &`,

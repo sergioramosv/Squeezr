@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
-const CACHE_FILE = join(homedir(), '.squeezr', 'cache.json')
+const DEFAULT_CACHE_PATH = join(homedir(), '.squeezr', 'cache.json')
 
 interface CacheEntry {
   compressed: string
@@ -15,8 +15,10 @@ export class CompressionCache {
   private store = new Map<string, CacheEntry>()
   private hits = 0
   private misses = 0
+  private readonly cachePath: string
 
-  constructor(private maxEntries: number) {
+  constructor(private maxEntries: number, cachePath = DEFAULT_CACHE_PATH) {
+    this.cachePath = cachePath
     this.load()
   }
 
@@ -56,8 +58,8 @@ export class CompressionCache {
 
   private load(): void {
     try {
-      if (existsSync(CACHE_FILE)) {
-        const raw = JSON.parse(readFileSync(CACHE_FILE, 'utf-8'))
+      if (existsSync(this.cachePath)) {
+        const raw = JSON.parse(readFileSync(this.cachePath, 'utf-8'))
         for (const [k, v] of Object.entries(raw)) {
           this.store.set(k, v as CacheEntry)
         }
@@ -69,7 +71,7 @@ export class CompressionCache {
     try {
       const dir = join(homedir(), '.squeezr')
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-      writeFileSync(CACHE_FILE, JSON.stringify(Object.fromEntries(this.store)))
+      writeFileSync(this.cachePath, JSON.stringify(Object.fromEntries(this.store)))
     } catch { /* ignore */ }
   }
 }

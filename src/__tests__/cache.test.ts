@@ -1,12 +1,17 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { CompressionCache } from '../cache.js'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+// Use a unique temp path per test run so no disk state bleeds between tests
+const tmpPath = () => join(tmpdir(), `squeezr-cache-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`)
 
 describe('CompressionCache', () => {
   let cache: CompressionCache
 
   beforeEach(() => {
-    // maxEntries=5 for fast LRU testing; file I/O fails silently in test env
-    cache = new CompressionCache(5)
+    // maxEntries=5, isolated temp file — no disk bleed between runs
+    cache = new CompressionCache(5, tmpPath())
   })
 
   it('returns undefined for a cache miss', () => {
@@ -51,8 +56,8 @@ describe('CompressionCache', () => {
     cache.set('c', '3')
     cache.set('d', '4')
     cache.set('e', '5')
-    // All 5 entries stored
     expect(cache.stats().size).toBe(5)
+
     // Add one more — oldest ('a') should be evicted
     cache.set('f', '6')
     expect(cache.stats().size).toBe(5)
@@ -60,20 +65,20 @@ describe('CompressionCache', () => {
     expect(cache.get('f')).toBe('6')
   })
 
-  it('reports correct size (relative to initial)', () => {
-    // Use a large maxEntries so LRU eviction doesn't interfere
-    const bigCache = new CompressionCache(1000)
-    const initialSize = bigCache.stats().size
-    bigCache.set('unique-key-x-' + Date.now(), 'y')
-    expect(bigCache.stats().size).toBe(initialSize + 1)
-    bigCache.set('unique-key-z-' + Date.now(), 'w')
-    expect(bigCache.stats().size).toBe(initialSize + 2)
+  it('reports correct size after additions', () => {
+    expect(cache.stats().size).toBe(0)  // fresh isolated cache
+    cache.set('key1', 'val1')
+    expect(cache.stats().size).toBe(1)
+    cache.set('key2', 'val2')
+    expect(cache.stats().size).toBe(2)
   })
 
-  it('overwrites existing entry', () => {
+  it('overwrites existing entry without growing size', () => {
     cache.set('key', 'first')
+    expect(cache.stats().size).toBe(1)
     cache.set('key', 'second')
     expect(cache.get('key')).toBe('second')
+    expect(cache.stats().size).toBe(1)
   })
 
   it('different texts produce different cache entries', () => {

@@ -2,10 +2,38 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.13.0] - 2026-04-02
+
+### Added
+- **Codex MITM compression** — Squeezr can now compress OpenAI Codex CLI context in real-time. A TLS-terminating MITM proxy on port 8081 intercepts Codex's WebSocket traffic to `chatgpt.com`, finds `function_call_output` tool results exceeding the threshold, and compresses them via a separate WebSocket call to `gpt-5.4-mini` using the same ChatGPT OAuth token — no API keys needed, no extra costs beyond your existing Codex subscription.
+- **WebSocket frame parser/builder** — full implementation of RFC 6455 frame encoding/decoding with masking support, used for both intercepting Codex frames and making compression requests.
+- **Automatic `permessage-deflate` stripping** — the MITM strips `Sec-WebSocket-Extensions` from upgrade requests so frames arrive as plain text, avoiding deflate context desync when modifying payloads.
+- **`chatgpt-account-id` capture** — intercepted from HTTP requests and forwarded to compression calls for proper account scoping.
+
+### Changed
+- **MITM proxy rewritten** — replaced the broken HTTP POST compression approach (Cloudflare 403) with direct WebSocket-to-WebSocket compression. The proxy now opens a dedicated WS connection to `chatgpt.com/backend-api/codex/responses` for each compression call.
+- Removed unused dependencies: `ws`, `fzstd`, `@types/ws`.
+- Removed unused `oauthRefresh.ts`.
+
+## [1.12.0] - 2026-04-02
+
+### Added
+- **Codex MITM proxy (experimental)** — HTTPS proxy on port 8081 with auto-generated CA for TLS termination. Intercepts `CONNECT` tunnels, generates per-host certificates, and supports WebSocket upgrade detection. `squeezr setup` now configures `HTTPS_PROXY` and `SSL_CERT_FILE` environment variables for Codex integration.
+- **`node-forge` dependency** — for CA/certificate generation.
+
+## [1.11.3] - 2026-04-02
+
+### Fixed
+- **Codex WebSocket proxy** — Codex v0.118 uses WebSocket (`ws://`) for the Responses API. Squeezr now upgrades HTTP connections on `/responses` and `/v1/responses` to a bidirectional WebSocket proxy that forwards to `wss://api.openai.com`. Includes automatic ChatGPT OAuth token refresh on `401` mid-stream.
+- **WebSocket routing for OAuth tokens** — ChatGPT OAuth bearer tokens (JWTs starting with `eyJ`) were incorrectly detected as local Ollama keys, routing WebSocket traffic to `ws://localhost:11434` instead of `wss://api.openai.com`. Fixed by excluding JWT-format tokens from the local-key check.
+- **OAuth token proxy** — added `/oauth/token` pass-through so Codex can use `CODEX_REFRESH_TOKEN_URL_OVERRIDE=http://localhost:PORT/oauth/token` when needed.
+- **`/models` path rewrite** — catch-all now rewrites bare `/models` (and other OpenAI root paths) to `/v1/models` so Codex model enumeration works correctly.
+
 ## [1.11.2] - 2026-04-02
 
 ### Fixed
-- **Codex v0.118 support** — Codex CLI v0.118 introduced a new `/responses` endpoint with a custom binary protocol. Squeezr's catch-all router now intercepts requests to `/responses` and correctly maps them to `/v1/responses` on the upstream server, preventing 404 errors and restoring full proxy compatibility with Codex.
+- **Codex / OpenAI Responses API support** — Codex CLI uses the Responses API (`POST /responses`) instead of Chat Completions. Squeezr now has dedicated routes for both `/responses` and `/v1/responses` with full streaming (SSE pipe-through), compression of `function_call_output` tool results, and correct header forwarding. Previously these requests fell through to the catch-all, which blocked indefinitely on streaming responses and caused 401 errors.
+- **Catch-all streaming** — the catch-all handler now detects `text/event-stream` responses and pipes them through correctly instead of buffering the full response with `arrayBuffer()`.
 
 ## [1.11.1] - 2026-04-01
 
