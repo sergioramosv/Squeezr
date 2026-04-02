@@ -2,6 +2,11 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.11.2] - 2026-04-02
+
+### Fixed
+- **Codex v0.118 support** — Codex CLI v0.118 introduced a new `/responses` endpoint with a custom binary protocol. Squeezr's catch-all router now intercepts requests to `/responses` and correctly maps them to `/v1/responses` on the upstream server, preventing 404 errors and restoring full proxy compatibility with Codex.
+
 ## [1.11.1] - 2026-04-01
 
 ### Fixed
