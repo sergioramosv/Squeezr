@@ -113,12 +113,23 @@ function stopProxy() {
       const match = out.match(/LISTENING\s+(\d+)/)
       pid = match?.[1]
     } else {
-      pid = execSync(`lsof -ti :${port}`, { encoding: 'utf-8', stdio: 'pipe' }).trim()
+      // Use -sTCP:LISTEN to get only the listening process, not connected clients.
+      // lsof may return multiple PIDs without this flag.
+      try {
+        pid = execSync(`lsof -ti :${port} -sTCP:LISTEN`, { encoding: 'utf-8', stdio: 'pipe' }).trim()
+      } catch {
+        // fallback: fuser (available on most Linux/WSL)
+        try {
+          pid = execSync(`fuser ${port}/tcp 2>/dev/null`, { encoding: 'utf-8', stdio: 'pipe' }).trim()
+        } catch {}
+      }
     }
     if (!pid) {
       console.log(`Squeezr is not running on port ${port}`)
       return
     }
+    // Take only the first PID in case multiple are returned
+    pid = pid.split(/\s+/)[0]
     if (process.platform === 'win32') {
       execSync(`taskkill /F /PID ${pid}`, { stdio: 'pipe' })
     } else {
