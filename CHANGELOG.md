@@ -2,6 +2,12 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.17.1] - 2026-04-03
+### Fixed
+- **`HTTPS_PROXY` no longer set globally on macOS/Linux/WSL** — the same root cause as the Windows 502 bug in v1.17.0 was present in the Unix shell profile setup and the bash/zsh shell wrapper. `HTTPS_PROXY=http://localhost:8081` was being exported into `~/.zshrc`, `~/.bashrc`, and `~/.profile`, routing all HTTPS traffic (including Claude Code) through the MITM proxy and causing 502 errors on every request. Fixed in `setupUnix()`, `setupWSL()`, `installBashWrapper()`, and `configurePorts()`.
+- **`SSL_CERT_FILE` no longer set globally** — this variable was pointing to a bundle containing only the Squeezr MITM CA cert (not the full system CA bundle), which would break TLS verification for all tools using OpenSSL. Replaced with `NODE_EXTRA_CA_CERTS` which is additive and safe.
+- **macOS Keychain trust for MITM CA** — `squeezr setup` on macOS now adds the MITM CA certificate to the login Keychain so Codex (Rust binary) trusts the proxy's TLS certificate.
+
 ## [1.17.0] - 2026-04-03
 ### Added
 - **Shell wrappers auto-refresh env vars** — `squeezr setup` and `squeezr update` install a shell wrapper (PowerShell on Windows, bash/zsh on Linux/macOS/WSL) that automatically applies env vars to the current session after `start`, `setup`, or `update`. No more closing and reopening terminals. Shows a one-time banner on first install. `squeezr uninstall` cleans it up.

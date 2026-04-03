@@ -100,7 +100,6 @@ function installShellWrapper() {
 
 function installBashWrapper() {
   const port = getPort()
-  const mitmPort = getMitmPort(port)
   const bundlePath = path.join(os.homedir(), '.squeezr', 'mitm-ca', 'bundle.crt')
   const marker = '# squeezr shell wrapper'
   const endMarker = '# end squeezr shell wrapper'
@@ -111,11 +110,7 @@ squeezr() {
     start|setup|update)
       export ANTHROPIC_BASE_URL=http://localhost:${port}
       export GEMINI_API_BASE_URL=http://localhost:${port}
-      export HTTPS_PROXY=http://localhost:${mitmPort}
-      export SSL_CERT_FILE=${bundlePath}
-      ;;
-    stop)
-      unset HTTPS_PROXY
+      export NODE_EXTRA_CA_CERTS=${bundlePath}
       ;;
   esac
 }
@@ -469,7 +464,6 @@ async function configurePorts() {
       `export SQUEEZR_MITM_PORT=${finalMitm}`,
       `export ANTHROPIC_BASE_URL=http://localhost:${finalPort}`,
       `export GEMINI_API_BASE_URL=http://localhost:${finalPort}`,
-      `export HTTPS_PROXY=http://localhost:${finalMitm}`,
     ].join('\n')
     for (const p of profiles) {
       try {
@@ -494,7 +488,6 @@ async function configurePorts() {
         try { execSync(`"${setx}" SQUEEZR_MITM_PORT "${finalMitm}"`, { stdio: 'pipe' }) } catch {}
         try { execSync(`"${setx}" ANTHROPIC_BASE_URL "http://localhost:${finalPort}"`, { stdio: 'pipe' }) } catch {}
         try { execSync(`"${setx}" GEMINI_API_BASE_URL "http://localhost:${finalPort}"`, { stdio: 'pipe' }) } catch {}
-        try { execSync(`"${setx}" HTTPS_PROXY "http://localhost:${finalMitm}"`, { stdio: 'pipe' }) } catch {}
       }
     } catch {}
   }
@@ -503,7 +496,6 @@ async function configurePorts() {
   process.env.SQUEEZR_PORT = String(finalPort)
   process.env.SQUEEZR_MITM_PORT = String(finalMitm)
   process.env.ANTHROPIC_BASE_URL = `http://localhost:${finalPort}`
-  process.env.HTTPS_PROXY = `http://localhost:${finalMitm}`
 
   // Auto stop + start
   console.log('')
@@ -822,9 +814,10 @@ function setupUnix() {
     `export ANTHROPIC_BASE_URL=http://localhost:${port}`,
     `export openai_base_url=http://localhost:${port}`,
     `export GEMINI_API_BASE_URL=http://localhost:${port}`,
-    `# squeezr MITM proxy for Codex (TLS interception)`,
-    `export HTTPS_PROXY=http://localhost:${mitmPort}`,
-    `export SSL_CERT_FILE=${bundlePath}`,
+    `export NODE_EXTRA_CA_CERTS=${bundlePath}`,
+    `# NOTE: HTTPS_PROXY is intentionally NOT set globally — it would route ALL HTTPS`,
+    `# (including Claude Code) through the MITM proxy and cause 502 errors.`,
+    `# For Codex, set it per-session only: HTTPS_PROXY=http://localhost:${mitmPort} codex`,
     `# squeezr auto-heal: start proxy if not running`,
     `if ! curl -sf http://localhost:${port}/squeezr/health >/dev/null 2>&1; then`,
     `  nohup ${nodeExe} ${distIndex} >> "${os.homedir()}/.squeezr/squeezr.log" 2>&1 &`,
@@ -840,8 +833,7 @@ function setupUnix() {
     `export ANTHROPIC_BASE_URL=http://localhost:${port}`,
     `export openai_base_url=http://localhost:${port}`,
     `export GEMINI_API_BASE_URL=http://localhost:${port}`,
-    `export HTTPS_PROXY=http://localhost:${mitmPort}`,
-    `export SSL_CERT_FILE=${bundlePath}`,
+    `export NODE_EXTRA_CA_CERTS=${bundlePath}`,
   ].join('\n')
 
   // Write env vars to ~/.profile (login shell — always loaded)
@@ -904,6 +896,28 @@ function setupUnix() {
       console.log(`  [warn] launchctl failed — starting in background`)
       spawn(nodeExe, [squeezrBin], { detached: true, stdio: 'ignore' }).unref()
     }
+
+    // Trust MITM CA in macOS Keychain (for Codex TLS interception)
+    // CA is generated on first proxy start — wait briefly for it to appear
+    const caPath = path.join(os.homedir(), '.squeezr', 'mitm-ca', 'ca.crt')
+    const waitForCa = (retries = 10, interval = 500) => new Promise(resolve => {
+      const check = (n) => {
+        if (fs.existsSync(caPath)) return resolve(true)
+        if (n <= 0) return resolve(false)
+        setTimeout(() => check(n - 1), interval)
+      }
+      check(retries)
+    })
+    waitForCa().then(found => {
+      if (found) {
+        try {
+          execSync(`security add-trusted-cert -d -r trustRoot -k ~/Library/Keychains/login.keychain-db "${caPath}" 2>/dev/null`, { stdio: 'pipe' })
+          console.log(`  [ok] MITM CA trusted in macOS Keychain`)
+        } catch {
+          console.log(`  [info] To trust MITM CA for Codex: security add-trusted-cert -d -r trustRoot -k ~/Library/Keychains/login.keychain-db "${caPath}"`)
+        }
+      }
+    })
 
   // 2b. Linux — systemd
   } else {
@@ -978,8 +992,9 @@ function setupWSL() {
     `export ANTHROPIC_BASE_URL=http://localhost:${port}`,
     `export openai_base_url=http://localhost:${port}`,
     `export GEMINI_API_BASE_URL=http://localhost:${port}`,
-    `export HTTPS_PROXY=http://localhost:${mitmPort}`,
-    `export SSL_CERT_FILE=${bundlePath}`,
+    `export NODE_EXTRA_CA_CERTS=${bundlePath}`,
+    `# NOTE: HTTPS_PROXY is intentionally NOT set globally — set per-session for Codex only:`,
+    `# HTTPS_PROXY=http://localhost:${mitmPort} codex`,
     `# squeezr auto-heal: start proxy if not running`,
     `if ! curl -sf http://localhost:${port}/squeezr/health >/dev/null 2>&1; then`,
     `  nohup ${nodeExe} ${distIndex} >> "${os.homedir()}/.squeezr/squeezr.log" 2>&1 &`,
@@ -994,8 +1009,7 @@ function setupWSL() {
     `export ANTHROPIC_BASE_URL=http://localhost:${port}`,
     `export openai_base_url=http://localhost:${port}`,
     `export GEMINI_API_BASE_URL=http://localhost:${port}`,
-    `export HTTPS_PROXY=http://localhost:${mitmPort}`,
-    `export SSL_CERT_FILE=${bundlePath}`,
+    `export NODE_EXTRA_CA_CERTS=${bundlePath}`,
   ].join('\n')
 
   const profilePath = path.join(os.homedir(), '.profile')
