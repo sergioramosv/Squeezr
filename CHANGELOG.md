@@ -2,6 +2,10 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.14.4] - 2026-04-03
+### Fixed
+- **Codex routing** — `/responses` was still hitting Anthropic when no auth header present because `detectUpstream` defaults to Anthropic. Now `/v1/responses` explicitly forces upstream to OpenAI regardless of headers. Verified: request reaches `api.openai.com/v1/responses` correctly.
+
 ## [1.14.3] - 2026-04-03
 ### Fixed
 - **Claude 502** — `compressWithHaiku()` was creating `new Anthropic()` without an explicit `baseURL`, so the SDK inherited `ANTHROPIC_BASE_URL=http://localhost:8080` from the environment and sent compression requests back to Squeezr itself, causing infinite recursion. Now always uses `https://api.anthropic.com` directly.

@@ -318,17 +318,20 @@ app.post('/oauth/token', async (c) => {
 // ── Catch-all ─────────────────────────────────────────────────────────────────
 
 app.all('*', async (c) => {
-  const upstream = detectUpstream(c.req.raw.headers)
+  let upstream = detectUpstream(c.req.raw.headers)
   const url = new URL(c.req.url)
   const NEEDS_V1 = new Set(['/models', '/engines', '/files', '/embeddings', '/moderations', '/completions', '/edits', '/responses'])
   const pathname = NEEDS_V1.has(url.pathname) ? `/v1${url.pathname}` : url.pathname
+
+  // /responses is exclusively an OpenAI Codex endpoint — override upstream regardless
+  // of what detectUpstream inferred from headers (Codex sends no auth to custom base URLs).
+  if (pathname === '/v1/responses') upstream = OPENAI_API
 
   const targetUrl = `${upstream}${pathname}${url.search}`
   const body = await c.req.arrayBuffer()
   const fwdHeaders = forwardHeaders(c.req.raw.headers)
 
-  // Codex CLI does not send its OAuth token when using a custom openai_base_url.
-  // Inject it from ~/.codex/auth.json if the request has no authorization header.
+  // Inject Codex OAuth token from ~/.codex/auth.json when no auth header present.
   if (upstream === OPENAI_API && !fwdHeaders['authorization']) {
     const codexToken = readCodexToken()
     if (codexToken) fwdHeaders['authorization'] = `Bearer ${codexToken}`
