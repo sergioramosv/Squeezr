@@ -2,6 +2,10 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.16.14] - 2026-04-03
+### Improved
+- **`squeezr update` also installs the PowerShell wrapper** — no need to run `squeezr setup` first. The wrapper is installed/updated automatically on both `setup` and `update`.
+
 ## [1.16.13] - 2026-04-03
 ### Added
 - **PowerShell wrapper auto-refreshes env vars** — `squeezr setup` installs a function in `$PROFILE` that wraps squeezr and automatically applies env vars (from the Windows registry) to the current session after `start`, `setup`, or `update`. No more closing/reopening terminals or copy-pasting commands. `squeezr uninstall` removes the wrapper.
