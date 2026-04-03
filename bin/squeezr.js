@@ -1044,14 +1044,25 @@ switch (command) {
         }
       }
 
-      // Clear update check cache so it doesn't show stale banner
-      try { fs.unlinkSync(UPDATE_CHECK_FILE) } catch {}
+      // Write cache with the new version so neither parent nor child shows stale banner
+      try {
+        const newPkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'))
+        const dir = path.dirname(UPDATE_CHECK_FILE)
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+        fs.writeFileSync(UPDATE_CHECK_FILE, JSON.stringify({ latest: newPkg.version, checkedAt: Date.now() }))
+      } catch {
+        try { fs.unlinkSync(UPDATE_CHECK_FILE) } catch {}
+      }
 
       console.log('\nStarting Squeezr...')
-      // Re-exec the new binary so we run the updated code
-      const squeezrBin = process.argv[1]
+      // Resolve the updated binary from npm global path (process.argv[1] may still be the old version)
+      let newBin = process.argv[1]
       try {
-        execSync(`node "${squeezrBin}" start`, { stdio: 'inherit' })
+        const resolved = execSync('which squeezr', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+        if (resolved) newBin = resolved
+      } catch {}
+      try {
+        execSync(`node "${newBin}" start`, { stdio: 'inherit' })
       } catch {}
 
       if (isWSL()) {
@@ -1109,4 +1120,4 @@ switch (command) {
     process.exit(1)
 }
 
-await showUpdateBanner()
+if (command !== 'update') await showUpdateBanner()
