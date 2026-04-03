@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { Hono } from 'hono';
 import { stream } from 'hono/streaming';
 import { config } from './config.js';
@@ -13,6 +16,15 @@ const ANTHROPIC_API = 'https://api.anthropic.com';
 const OPENAI_API = 'https://api.openai.com';
 const GOOGLE_API = 'https://generativelanguage.googleapis.com';
 const SKIP_REQ_HEADERS = new Set(['host', 'content-length', 'transfer-encoding', 'connection']);
+function readCodexToken() {
+    try {
+        const d = JSON.parse(readFileSync(join(homedir(), '.codex', 'auth.json'), 'utf-8'));
+        return d?.tokens?.access_token ?? null;
+    }
+    catch {
+        return null;
+    }
+}
 const SKIP_RESP_HEADERS = new Set(['content-encoding', 'transfer-encoding', 'connection', 'content-length']);
 export const stats = new Stats();
 function forwardHeaders(headers) {
@@ -247,11 +259,18 @@ app.post('/oauth/token', async (c) => {
 app.all('*', async (c) => {
     const upstream = detectUpstream(c.req.raw.headers);
     const url = new URL(c.req.url);
-    const NEEDS_V1 = new Set(['/models', '/engines', '/files', '/embeddings', '/moderations', '/completions', '/edits']);
+    const NEEDS_V1 = new Set(['/models', '/engines', '/files', '/embeddings', '/moderations', '/completions', '/edits', '/responses']);
     const pathname = NEEDS_V1.has(url.pathname) ? `/v1${url.pathname}` : url.pathname;
     const targetUrl = `${upstream}${pathname}${url.search}`;
     const body = await c.req.arrayBuffer();
     const fwdHeaders = forwardHeaders(c.req.raw.headers);
+    // Codex CLI does not send its OAuth token when using a custom openai_base_url.
+    // Inject it from ~/.codex/auth.json if the request has no authorization header.
+    if (upstream === OPENAI_API && !fwdHeaders['authorization']) {
+        const codexToken = readCodexToken();
+        if (codexToken)
+            fwdHeaders['authorization'] = `Bearer ${codexToken}`;
+    }
     const resp = await fetch(targetUrl, {
         method: c.req.method,
         headers: fwdHeaders,

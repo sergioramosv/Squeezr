@@ -2,6 +2,12 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.14.3] - 2026-04-03
+### Fixed
+- **Claude 502** — `compressWithHaiku()` was creating `new Anthropic()` without an explicit `baseURL`, so the SDK inherited `ANTHROPIC_BASE_URL=http://localhost:8080` from the environment and sent compression requests back to Squeezr itself, causing infinite recursion. Now always uses `https://api.anthropic.com` directly.
+- **Codex 404** — catch-all was forwarding `/responses` to `api.openai.com/responses` (no `/v1/`). Added `/responses` to `NEEDS_V1` so it correctly maps to `/v1/responses`.
+- **Codex auth** — Codex CLI does not include its OAuth Bearer token when `openai_base_url` points to a custom proxy. Squeezr now reads it from `~/.codex/auth.json` and injects it automatically when the outbound request has no `authorization` header.
+
 ## [1.14.2] - 2026-04-03
 ### Fixed
 - **`squeezr setup` on Windows** — set `NODE_EXTRA_CA_CERTS` pointing to the MITM CA. Node.js (Codex CLI) does not use the Windows Certificate Store, so `certutil` alone was insufficient — the Codex process would reject the MITM certificate. `NODE_EXTRA_CA_CERTS` adds the CA to Node.js's trusted roots without replacing the default bundle.

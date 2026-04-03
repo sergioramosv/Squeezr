@@ -40,7 +40,9 @@ async function compressWithHaiku(text: string, apiKey: string): Promise<string> 
   // The Anthropic SDK accepts both: apiKey → x-api-key header,
   // authToken → Authorization: Bearer header.
   const authOpts = apiKey.startsWith('sk-') ? { apiKey } : { authToken: apiKey }
-  const client = new Anthropic(authOpts)
+  // Force real API URL — ANTHROPIC_BASE_URL points to this proxy, which would cause
+  // infinite recursion if we let the SDK inherit it from the environment.
+  const client = new Anthropic({ ...authOpts, baseURL: 'https://api.anthropic.com' })
   const resp = await client.messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 300,
