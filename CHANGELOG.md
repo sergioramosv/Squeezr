@@ -2,6 +2,12 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.16.0] - 2026-04-03
+### Added
+- **`squeezr uninstall`** — completely removes Squeezr: stops proxy, removes env vars (Windows registry / shell profiles), removes CA from certificate store, removes auto-start (NSSM/Task Scheduler/launchd/systemd), deletes `~/.squeezr` and config.
+### Fixed
+- **Auto-restart on version mismatch** — `squeezr start` now checks if the running process version matches the installed version. If mismatched (e.g. after `npm update`), it auto-kills the old process and starts the new one. This was the root cause of 502 errors after updates.
+
 ## [1.15.0] - 2026-04-03
 ### Added
 - **`squeezr ports` command** — interactive prompt to change HTTP proxy and MITM proxy ports. Updates `squeezr.toml` and env vars.

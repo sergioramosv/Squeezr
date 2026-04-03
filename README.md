@@ -177,6 +177,7 @@ squeezr config     # print current config
 squeezr ports      # change HTTP and MITM proxy ports
 squeezr gain       # estimate token savings for a directory
 squeezr discover   # detect which AI CLIs are installed
+squeezr uninstall  # remove Squeezr completely (env vars, CA, auto-start, logs)
 squeezr version    # print version
 ```
 

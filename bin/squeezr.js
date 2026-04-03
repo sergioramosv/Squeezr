@@ -42,6 +42,7 @@ Usage:
   squeezr status           Check if proxy is running
   squeezr config           Print config file path and current settings
   squeezr ports            Change HTTP and MITM proxy ports
+  squeezr uninstall        Remove Squeezr completely (env vars, CA, auto-start, logs)
   squeezr version          Print version
   squeezr help             Show this help
 `
@@ -66,22 +67,32 @@ async function startDaemon() {
     process.exit(1)
   }
 
-  // Check if already running
+  // Check if already running — and if the version matches
   const port = process.env.SQUEEZR_PORT || 8080
-  const running = await new Promise(resolve => {
+  const runningVersion = await new Promise(resolve => {
     const req = http.get(`http://localhost:${port}/squeezr/health`, res => {
-      resolve(res.statusCode === 200)
-      res.destroy()
+      let data = ''
+      res.on('data', chunk => { data += chunk })
+      res.on('end', () => {
+        try { resolve(JSON.parse(data).version) } catch { resolve('unknown') }
+      })
     })
-    req.on('error', () => resolve(false))
-    req.setTimeout(2000, () => { req.destroy(); resolve(false) })
+    req.on('error', () => resolve(null))
+    req.setTimeout(2000, () => { req.destroy(); resolve(null) })
   })
-  if (running) {
-    const mitmPort = getMitmPort(port)
-    console.log(`Squeezr is already running`)
-    console.log(`  HTTP proxy (Claude/Aider/Gemini): http://localhost:${port}`)
-    console.log(`  MITM proxy (Codex):               http://localhost:${mitmPort}`)
-    return
+  if (runningVersion) {
+    if (runningVersion === pkg.version) {
+      const mitmPort = getMitmPort(port)
+      console.log(`Squeezr is already running (v${pkg.version})`)
+      console.log(`  HTTP proxy (Claude/Aider/Gemini): http://localhost:${port}`)
+      console.log(`  MITM proxy (Codex):               http://localhost:${mitmPort}`)
+      return
+    }
+    // Version mismatch — old process from before npm update. Kill and restart.
+    console.log(`Squeezr v${runningVersion} is running but v${pkg.version} is installed. Restarting...`)
+    stopProxy()
+    // Wait for ports to free up
+    await new Promise(r => setTimeout(r, 1500))
   }
 
   // Launch detached background process
@@ -279,6 +290,94 @@ async function configurePorts() {
 
   console.log(`\nRestart squeezr for changes to take effect:`)
   console.log(`  squeezr stop && squeezr start`)
+}
+
+// ── squeezr uninstall ─────────────────────────────────────────────────────────
+
+async function uninstall() {
+  const { createInterface } = await import('readline')
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  const answer = await new Promise(resolve => rl.question(
+    'This will remove Squeezr completely: stop proxy, remove env vars, CA certs, auto-start, config, and logs.\nContinue? [y/N] ', resolve
+  ))
+  rl.close()
+  if (answer.trim().toLowerCase() !== 'y') {
+    console.log('Cancelled.')
+    return
+  }
+
+  console.log('\nUninstalling Squeezr...\n')
+
+  // 1. Stop proxy
+  stopProxy()
+
+  // 2. Remove env vars
+  if (process.platform === 'win32') {
+    const vars = ['ANTHROPIC_BASE_URL', 'GEMINI_API_BASE_URL', 'HTTPS_PROXY', 'NODE_EXTRA_CA_CERTS', 'SQUEEZR_PORT', 'SQUEEZR_MITM_PORT', 'openai_base_url', 'NO_PROXY']
+    for (const v of vars) {
+      try { execSync(`reg delete "HKCU\\Environment" /v ${v} /f`, { stdio: 'pipe' }) } catch {}
+    }
+    console.log('  [ok] Windows env vars removed')
+  } else {
+    // Remove squeezr block from shell profiles
+    const profiles = [
+      path.join(os.homedir(), '.zshrc'),
+      path.join(os.homedir(), '.bashrc'),
+      path.join(os.homedir(), '.bash_profile'),
+    ]
+    for (const p of profiles) {
+      try {
+        const content = fs.readFileSync(p, 'utf-8')
+        if (content.includes('# squeezr env vars')) {
+          const cleaned = content.replace(/\n?# squeezr env vars[\s\S]*?fi\n?/g, '\n')
+          fs.writeFileSync(p, cleaned)
+          console.log(`  [ok] Cleaned ${p}`)
+        }
+      } catch {}
+    }
+  }
+
+  // 3. Remove CA from certificate stores
+  if (process.platform === 'win32') {
+    try { execSync('certutil -delstore -user Root "Squeezr-MITM-CA"', { stdio: 'pipe' }); console.log('  [ok] CA removed from user certificate store') } catch {}
+    try { execSync('certutil -delstore Root "Squeezr-MITM-CA"', { stdio: 'pipe' }) } catch {}
+  } else if (process.platform === 'darwin') {
+    try { execSync('security delete-certificate -c "Squeezr-MITM-CA" ~/Library/Keychains/login.keychain-db', { stdio: 'pipe' }); console.log('  [ok] CA removed from Keychain') } catch {}
+  }
+  // On Linux, CA is only in bundle.crt which gets deleted with ~/.squeezr below
+
+  // 4. Remove auto-start
+  if (process.platform === 'win32') {
+    try { execSync('nssm stop SqueezrProxy', { stdio: 'pipe' }) } catch {}
+    try { execSync('nssm remove SqueezrProxy confirm', { stdio: 'pipe' }) } catch {}
+    try { execSync('schtasks /Delete /TN "Squeezr" /F', { stdio: 'pipe' }); console.log('  [ok] Removed scheduled task') } catch {}
+  } else if (process.platform === 'darwin') {
+    const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.squeezr.plist')
+    try { execSync(`launchctl unload "${plistPath}"`, { stdio: 'pipe' }) } catch {}
+    try { fs.unlinkSync(plistPath); console.log('  [ok] Removed launchd plist') } catch {}
+  } else {
+    try { execSync('systemctl --user disable --now squeezr', { stdio: 'pipe' }) } catch {}
+    const servicePath = path.join(os.homedir(), '.config', 'systemd', 'user', 'squeezr.service')
+    try { fs.unlinkSync(servicePath); console.log('  [ok] Removed systemd service') } catch {}
+  }
+
+  // 5. Remove ~/.squeezr (logs, cache, CA, stats)
+  const squeezrDir = path.join(os.homedir(), '.squeezr')
+  try {
+    fs.rmSync(squeezrDir, { recursive: true, force: true })
+    console.log(`  [ok] Removed ${squeezrDir}`)
+  } catch {}
+
+  // 6. Remove global config
+  const tomlPath = path.join(ROOT, 'squeezr.toml')
+  try { fs.unlinkSync(tomlPath) } catch {}
+
+  console.log(`
+Done! Squeezr has been completely removed.
+
+To finish, run:
+  npm uninstall -g squeezr-ai
+`)
 }
 
 // ── squeezr setup ─────────────────────────────────────────────────────────────
@@ -763,6 +862,9 @@ switch (command) {
 
   case 'ports':
     await configurePorts()
+    break
+  case 'uninstall':
+    await uninstall()
     break
   case 'config':
     showConfig()
