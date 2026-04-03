@@ -564,7 +564,29 @@ The installer configures Squeezr to start automatically on login:
 | macOS | launchd (`~/Library/LaunchAgents/com.squeezr.plist`) | Shell auto-heal |
 | Linux | systemd user service (`~/.config/systemd/user/squeezr.service`) | Shell auto-heal |
 | Windows | Task Scheduler (runs at login, restarts on failure) | — |
+| Windows (robust) | **NSSM Windows Service** (auto-restart on crash) | — |
 | **WSL2** | systemd → Task Scheduler (cascade) | Shell auto-heal |
+
+### Windows: NSSM (recommended over Task Scheduler)
+
+The built-in Task Scheduler setup requires admin on every reinstall and does **not** restart Squeezr if it crashes mid-session (e.g. due to `ECONNRESET`). For a more robust setup, use [NSSM](https://nssm.cc) to run Squeezr as a proper Windows service:
+
+```powershell
+# Install NSSM
+winget install nssm
+
+# Create the service (run as Administrator, adjust paths if needed)
+$node   = (where.exe node | Select-Object -First 1)
+$script = "$(npm root -g)\squeezr-ai\bin\squeezr.js"
+nssm install SqueezrProxy $node $script
+nssm set SqueezrProxy AppExit Default Restart
+nssm set SqueezrProxy AppRestartDelay 3000
+nssm start SqueezrProxy
+```
+
+NSSM gives you: auto-start on boot, automatic restart on crash, stdout/stderr logs, and control via `services.msc`.
+
+See [NSSM_WINDOWS_SERVICE.md](./NSSM_WINDOWS_SERVICE.md) for the full guide including log setup, troubleshooting, and uninstall steps.
 
 ### WSL2 support
 

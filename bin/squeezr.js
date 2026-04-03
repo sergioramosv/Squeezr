@@ -204,29 +204,65 @@ function setupWindows() {
     }
   }
 
-  // 2. Register Task Scheduler with hidden window so no console pops up on login.
-  // The action runs: powershell -WindowStyle Hidden -Command "node dist/index.js"
-  const taskName = 'Squeezr'
-  const nodeArg = `${nodeExe} \`"${distIndex}\`"`
-  const ps = [
-    `$e = Get-ScheduledTask -TaskName '${taskName}' -ErrorAction SilentlyContinue`,
-    `if ($e) { Unregister-ScheduledTask -TaskName '${taskName}' -Confirm:$false }`,
-    `$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-WindowStyle Hidden -NonInteractive -Command "${nodeArg}"' -WorkingDirectory '${ROOT}'`,
-    `$t = New-ScheduledTaskTrigger -AtLogon`,
-    `$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1)`,
-    `Register-ScheduledTask -TaskName '${taskName}' -Action $a -Trigger $t -Settings $s -RunLevel Highest -Force | Out-Null`,
-  ].join('; ')
+  // 2. Auto-start: try NSSM (Windows service, survives crashes) → fallback to Task Scheduler
+  const logDir = path.join(os.homedir(), '.squeezr')
+  const serviceName = 'SqueezrProxy'
+  let autoStartOk = false
 
-  try {
-    execSync(`powershell -NoProfile -Command "${ps}"`, { stdio: 'pipe' })
-    console.log(`  [ok] Auto-start registered in Task Scheduler (hidden, starts on login)`)
-  } catch {
-    console.log(`  [warn] Task Scheduler failed — run as admin for auto-start on login`)
+  const nssmAvailable = (() => {
+    try { execSync('where nssm', { stdio: 'pipe' }); return true } catch { return false }
+  })()
+
+  if (nssmAvailable) {
+    try {
+      // Remove existing service if present (ignore errors)
+      try { execSync(`nssm stop ${serviceName}`, { stdio: 'pipe' }) } catch {}
+      try { execSync(`nssm remove ${serviceName} confirm`, { stdio: 'pipe' }) } catch {}
+
+      execSync(`nssm install ${serviceName} "${nodeExe}" "${distIndex}"`, { stdio: 'pipe' })
+      execSync(`nssm set ${serviceName} AppDirectory "${ROOT}"`, { stdio: 'pipe' })
+      execSync(`nssm set ${serviceName} AppStdout "${logDir}\\service-stdout.log"`, { stdio: 'pipe' })
+      execSync(`nssm set ${serviceName} AppStderr "${logDir}\\service-stderr.log"`, { stdio: 'pipe' })
+      execSync(`nssm set ${serviceName} AppRotateFiles 1`, { stdio: 'pipe' })
+      execSync(`nssm set ${serviceName} AppRotateSeconds 86400`, { stdio: 'pipe' })
+      execSync(`nssm set ${serviceName} AppExit Default Restart`, { stdio: 'pipe' })
+      execSync(`nssm set ${serviceName} AppRestartDelay 3000`, { stdio: 'pipe' })
+      execSync(`nssm set ${serviceName} Description "Squeezr AI token compression proxy on port 8080"`, { stdio: 'pipe' })
+      execSync(`nssm start ${serviceName}`, { stdio: 'pipe' })
+      console.log(`  [ok] Auto-start registered as Windows service via NSSM (auto-restart on crash)`)
+      autoStartOk = true
+    } catch (err) {
+      const msg = err.stderr?.toString() || err.message || ''
+      if (msg.includes('Access') || msg.includes('admin') || msg.includes('5')) {
+        console.log(`  [warn] NSSM requires admin — run as Administrator for service install`)
+      } else {
+        console.log(`  [warn] NSSM install failed: ${msg.trim().split('\n')[0]}`)
+      }
+    }
+  }
+
+  if (!autoStartOk) {
+    // Fallback: Task Scheduler (no crash recovery, but no admin needed for user tasks)
+    const taskName = 'Squeezr'
+    const nodeArg = `${nodeExe} \`"${distIndex}\`"`
+    const ps = [
+      `$e = Get-ScheduledTask -TaskName '${taskName}' -ErrorAction SilentlyContinue`,
+      `if ($e) { Unregister-ScheduledTask -TaskName '${taskName}' -Confirm:$false }`,
+      `$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-WindowStyle Hidden -NonInteractive -Command "${nodeArg}"' -WorkingDirectory '${ROOT}'`,
+      `$t = New-ScheduledTaskTrigger -AtLogon`,
+      `$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit 0 -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1)`,
+      `Register-ScheduledTask -TaskName '${taskName}' -Action $a -Trigger $t -Settings $s -RunLevel Highest -Force | Out-Null`,
+    ].join('; ')
+    try {
+      execSync(`powershell -NoProfile -Command "${ps}"`, { stdio: 'pipe' })
+      console.log(`  [ok] Auto-start registered in Task Scheduler (install NSSM for crash recovery)`)
+    } catch {
+      console.log(`  [warn] Auto-start failed — install NSSM or run as admin: https://nssm.cc`)
+    }
   }
 
   // 3. Start Squeezr right now as a detached background process (no window)
   //    Logs go to ~/.squeezr/squeezr.log
-  const logDir = path.join(os.homedir(), '.squeezr')
   const logFile = path.join(logDir, 'squeezr.log')
   fs.mkdirSync(logDir, { recursive: true })
   const logFd = fs.openSync(logFile, 'a')
