@@ -198,8 +198,9 @@ function setupWindows() {
     openai_base_url: `http://localhost:${port}`,
     GEMINI_API_BASE_URL: `http://localhost:${port}`,
     HTTPS_PROXY: `http://localhost:${mitmPort}`,
-    // Node.js does NOT use the Windows Certificate Store — this makes Codex (Node.js) trust the MITM CA
     NODE_EXTRA_CA_CERTS: caPath,
+    // Bypass MITM for OpenAI auth and non-Codex endpoints — only chatgpt.com needs interception
+    NO_PROXY: 'auth.openai.com,login.openai.com,api.openai.com,api.anthropic.com,generativelanguage.googleapis.com',
   }
   for (const [key, value] of Object.entries(vars)) {
     try {

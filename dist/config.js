@@ -107,7 +107,8 @@ export class Config {
         if (!this.localEnabled)
             return false;
         const k = key.trim().toLowerCase();
-        return this.localDummyKeys.has(k) || (k.length > 0 && !k.startsWith('sk-') && !k.startsWith('aiza'));
+        // JWT OAuth tokens (Codex) start with 'eyj' — never route those to local
+        return this.localDummyKeys.has(k) || (k.length > 0 && !k.startsWith('sk-') && !k.startsWith('aiza') && !k.startsWith('eyj'));
     }
 }
 export const config = new Config();

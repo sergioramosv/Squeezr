@@ -2,6 +2,12 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.14.5] - 2026-04-03
+### Fixed
+- **Codex auth.openai.com blocked** — `HTTPS_PROXY` was intercepting ALL HTTPS traffic including OpenAI auth endpoints. Added `NO_PROXY` excluding `auth.openai.com`, `api.openai.com`, `api.anthropic.com` and others so only `chatgpt.com` WebSocket traffic goes through the MITM.
+- **Codex JWT routed to Ollama** — `isLocalKey()` returned `true` for JWT tokens (`eyJ...`) because they don't start with `sk-`. Added `!k.startsWith('eyj')` check so Codex OAuth tokens route to OpenAI, not local.
+- **OpenAI compression loop** — `compressWithGptMini()` inherited `openai_base_url=http://localhost:8080` from the environment, causing compression calls to loop back through Squeezr. Now hardcodes `baseURL: 'https://api.openai.com/v1'`.
+
 ## [1.14.4] - 2026-04-03
 ### Fixed
 - **Codex routing** — `/responses` was still hitting Anthropic when no auth header present because `detectUpstream` defaults to Anthropic. Now `/v1/responses` explicitly forces upstream to OpenAI regardless of headers. Verified: request reaches `api.openai.com/v1/responses` correctly.

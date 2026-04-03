@@ -37,7 +37,9 @@ async function compressWithHaiku(text, apiKey) {
 }
 async function compressWithGptMini(text, apiKey) {
     // apiKey can be a real key (sk-...) or an OAuth bearer token
-    const client = new OpenAI({ apiKey });
+    // Force real API URL — openai_base_url points to this proxy, which would cause
+    // infinite recursion if we let the SDK inherit it from the environment.
+    const client = new OpenAI({ apiKey, baseURL: 'https://api.openai.com/v1' });
     const resp = await client.chat.completions.create({
         model: 'gpt-4o-mini',
         max_tokens: 300,
