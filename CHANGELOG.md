@@ -2,6 +2,14 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.16.23] - 2026-04-03
+### Fixed
+- **Removed confusing "Run this to activate" hint** — the shell wrapper handles env var refresh automatically. The hint only showed when no wrapper existed and caused confusion with clipboard quote issues. Now the wrapper is the only mechanism — if it's new, the ONE-TIME SETUP banner shows; if it's already installed, nothing extra is printed.
+
+## [1.16.22] - 2026-04-03
+### Fixed
+- **Removed confusing "Run this to activate" hint** — the shell wrapper already handles env var refresh automatically. The hint caused confusion and the clipboard copy lost quotes, leading to PowerShell errors.
+
 ## [1.16.21] - 2026-04-03
 ### Fixed
 - **Stop setting `HTTPS_PROXY` globally on Windows** — routing all HTTPS traffic through the MITM proxy broke Claude Code (502), npm (ECONNREFUSED), and other tools. `HTTPS_PROXY` is now only needed for Codex and should be set per-session. Setup cleans up the registry entry left by older versions.

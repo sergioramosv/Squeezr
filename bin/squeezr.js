@@ -90,24 +90,6 @@ function getPort() {
 }
 
 /**
- * Print a PowerShell/bash one-liner to refresh env vars in the current session.
- * Copies it to the clipboard on Windows so the user can just Ctrl+V, Enter.
- */
-function printEnvRefreshHint(port, mitmPort) {
-  const bundlePath = path.join(os.homedir(), '.squeezr', 'mitm-ca', 'bundle.crt')
-  if (process.platform === 'win32') {
-    const cmd = `$env:ANTHROPIC_BASE_URL="http://localhost:${port}"; $env:GEMINI_API_BASE_URL="http://localhost:${port}"`
-    try { execSync(`powershell -NoProfile -Command "Set-Clipboard '${cmd.replace(/'/g, "''")}';"`, { stdio: 'pipe' }) } catch {}
-    console.log(`\n  Run this to activate in the current terminal (already copied to clipboard):\n`)
-    console.log(`  ${cmd}\n`)
-  } else if (isWSL()) {
-    const cmd = `export ANTHROPIC_BASE_URL=http://localhost:${port} GEMINI_API_BASE_URL=http://localhost:${port} HTTPS_PROXY=http://localhost:${mitmPort} SSL_CERT_FILE=${bundlePath}`
-    console.log(`\n  Run this to activate in the current terminal:\n`)
-    console.log(`  ${cmd}\n`)
-  }
-}
-
-/**
  * Install/update shell wrapper functions so env vars are auto-refreshed
  * after squeezr start/setup/update (child processes can't modify parent env).
  */
@@ -297,7 +279,6 @@ async function startDaemon() {
   console.log(`  MITM proxy (Codex):               http://localhost:${mitmPort}`)
   console.log(`  Logs: ${logFile}`)
 
-  printEnvRefreshHint(port, mitmPort)
 }
 
 function showLogs() {
@@ -821,8 +802,7 @@ Done!
   squeezr status   — check it's running
   squeezr gain     — see token savings
 `)
-    printEnvRefreshHint(port, mitmPort)
-  }
+    }
 }
 
 function setupUnix() {
@@ -964,6 +944,7 @@ Done!
   squeezr status   — check it's running
   squeezr gain     — see token savings
 `)
+  installShellWrapper()
 }
 
 // ── WSL2 detection ───────────────────────────────────────────────────────────
@@ -1152,7 +1133,7 @@ Done!
   squeezr status   — check it's running
   squeezr gain     — see token savings
 `)
-  printEnvRefreshHint(setupPort, setupMitmPort)
+  installShellWrapper()
 }
 
 // ── CLI router ────────────────────────────────────────────────────────────────
@@ -1242,7 +1223,6 @@ switch (command) {
 
       // Ensure PowerShell wrapper is installed (so env vars refresh automatically)
       installShellWrapper()
-      printEnvRefreshHint(startPort, startMitmPort)
     })()
     break
   case 'stop':
