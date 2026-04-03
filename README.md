@@ -23,13 +23,12 @@ squeezr setup   # configures env vars, auto-start, and CA trust
 squeezr start
 ```
 
-> **WSL users:** After `squeezr setup` or `squeezr update`, close the terminal and open a new one so the environment variables take effect.
-
 `squeezr setup` handles everything automatically:
-- Sets `ANTHROPIC_BASE_URL`, `GEMINI_API_BASE_URL`, `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`
+- Sets `ANTHROPIC_BASE_URL`, `GEMINI_API_BASE_URL`, `NODE_EXTRA_CA_CERTS`
+- Installs a shell wrapper (PowerShell on Windows, bash/zsh on Linux/macOS/WSL) that auto-refreshes env vars after `squeezr start/setup/update` — no need to restart the terminal
 - Registers auto-start (launchd on macOS, systemd on Linux, Task Scheduler/NSSM on Windows)
 - **Windows:** imports the MITM CA into the Windows Certificate Store (user-level, no admin required) so Rust-based CLIs like Codex trust the proxy's TLS certificates
-- **macOS/Linux:** generates a CA bundle at `~/.squeezr/mitm-ca/bundle.crt` for `SSL_CERT_FILE`
+- **macOS/Linux/WSL:** generates a CA bundle at `~/.squeezr/mitm-ca/bundle.crt` for `SSL_CERT_FILE`
 
 ## How it works
 
@@ -188,8 +187,8 @@ squeezr version    # print version
 
 ## Requirements
 
-- Node.js 18+
-- For Codex MITM: `HTTPS_PROXY=http://localhost:8081` (set automatically by `squeezr setup`)
+- Node.js 18+ (compatible with Node.js 24)
+- For Codex MITM: set `HTTPS_PROXY=http://localhost:8081` in the terminal where you run Codex (not set globally to avoid interfering with other tools)
 - For local compression: [Ollama](https://ollama.ai) with `qwen2.5-coder:1.5b`
 
 ## License

@@ -2,77 +2,16 @@
 
 All notable changes to Squeezr will be documented here.
 
-## [1.16.24] - 2026-04-03
-### Fixed
-- **PowerShell wrapper corruption fixed for real** — rewrote the PS wrapper to avoid all `$` signs that were being eaten by JS string handling. Uses `-contains` instead of `-match` regex, `foreach` instead of `ForEach-Object`, and only double quotes. CRLF line endings for Windows.
-
-## [1.16.23] - 2026-04-03
-### Fixed
-- **Removed confusing "Run this to activate" hint** — the shell wrapper handles env var refresh automatically. The hint only showed when no wrapper existed and caused confusion with clipboard quote issues. Now the wrapper is the only mechanism — if it's new, the ONE-TIME SETUP banner shows; if it's already installed, nothing extra is printed.
-
-## [1.16.22] - 2026-04-03
-### Fixed
-- **Removed confusing "Run this to activate" hint** — the shell wrapper already handles env var refresh automatically. The hint caused confusion and the clipboard copy lost quotes, leading to PowerShell errors.
-
-## [1.16.21] - 2026-04-03
-### Fixed
-- **Stop setting `HTTPS_PROXY` globally on Windows** — routing all HTTPS traffic through the MITM proxy broke Claude Code (502), npm (ECONNREFUSED), and other tools. `HTTPS_PROXY` is now only needed for Codex and should be set per-session. Setup cleans up the registry entry left by older versions.
-
-## [1.16.20] - 2026-04-03
-### Fixed
-- **Duplicate `installShellWrapper` declaration crash** — second function was not renamed to `installPowerShellWrapper`, and the dispatcher called itself recursively instead of the PS wrapper.
-
-## [1.16.19] - 2026-04-03
-### Fixed
-- **PowerShell wrapper syntax error** — `$` signs in PowerShell code were being interpreted as JS template literal interpolation, breaking the regex and variable references. Now uses string array join instead of template literal.
-
-## [1.16.18] - 2026-04-03
-### Fixed
-- **PowerShell wrapper crash** — was passing `squeezr.cmd` (a batch file) to `node`, causing `SyntaxError`. Now calls `squeezr.cmd` directly via `&`.
-
-## [1.16.17] - 2026-04-03
-### Fixed
-- **Node.js v24 compatibility** — strip `Expect` header from forwarded requests. Node 24's undici rejects this header with `UND_ERR_NOT_SUPPORTED`, causing 500 errors on all proxied requests.
-
-## [1.16.16] - 2026-04-03
+## [1.17.0] - 2026-04-03
 ### Added
-- **Bash/Zsh shell wrapper for WSL, Linux, and macOS** — same auto-refresh behavior as the PowerShell wrapper. After `squeezr start/setup/update`, env vars are applied to the current session automatically. Shows one-time banner to reopen terminal on first install. `squeezr uninstall` cleans it up.
+- **Shell wrappers auto-refresh env vars** — `squeezr setup` and `squeezr update` install a shell wrapper (PowerShell on Windows, bash/zsh on Linux/macOS/WSL) that automatically applies env vars to the current session after `start`, `setup`, or `update`. No more closing and reopening terminals. Shows a one-time banner on first install. `squeezr uninstall` cleans it up.
+- **`squeezr update` resolves the new binary correctly** — finds the freshly installed package via `npm root -g` and spawns the daemon directly. No stale version issues on WSL or Windows.
 
-## [1.16.15] - 2026-04-03
-### Improved
-- **One-time setup banner** — when the PowerShell wrapper is installed for the first time, shows a clear boxed message asking the user to reopen the terminal once. Only appears on first install, not on subsequent updates.
-
-## [1.16.14] - 2026-04-03
-### Improved
-- **`squeezr update` also installs the PowerShell wrapper** — no need to run `squeezr setup` first. The wrapper is installed/updated automatically on both `setup` and `update`.
-
-## [1.16.13] - 2026-04-03
-### Added
-- **PowerShell wrapper auto-refreshes env vars** — `squeezr setup` installs a function in `$PROFILE` that wraps squeezr and automatically applies env vars (from the Windows registry) to the current session after `start`, `setup`, or `update`. No more closing/reopening terminals or copy-pasting commands. `squeezr uninstall` removes the wrapper.
-
-## [1.16.12] - 2026-04-03
-### Improved
-- **`setup`, `start`, and `update` print a one-liner to activate env vars in the current terminal** — on Windows PowerShell it's copied to the clipboard automatically. No need to close and reopen the terminal anymore.
-
-## [1.16.11] - 2026-04-03
 ### Fixed
-- **`squeezr stop` clears `HTTPS_PROXY` from Windows registry** — prevents `ECONNREFUSED` errors when running `npm install` or other tools after stopping the proxy. `squeezr start` and `squeezr update` restore it automatically once the proxy is alive again.
-
-## [1.16.10] - 2026-04-03
-### Fixed
-- **`squeezr update` SyntaxError** — duplicate `uPort` variable declaration in the update command caused a crash on v1.16.9. Renamed to avoid conflict.
-
-## [1.16.9] - 2026-04-03
-### Fixed
-- **`squeezr update` starts the new version directly** — no longer re-execs the old binary via `which squeezr` (which in WSL resolves to the Windows npm path, not the updated Linux one). Now resolves `npm root -g` to find the freshly installed package and spawns the daemon from its `dist/index.js`. Eliminates the stale "Update available" banner after updates.
-
-## [1.16.8] - 2026-04-03
-### Fixed
-- **`squeezr update` no longer shows stale "Update available" banner** — writes the new version to the update cache after install, resolves the updated binary from npm global path instead of reusing the old one, and skips the banner entirely for the `update` command.
-
-## [1.16.7] - 2026-04-03
-### Improved
-- **WSL terminal warning after `setup` and `update`** — prints a clear `⚠️ IMPORTANT` message reminding users to close and reopen the terminal so environment variables take effect. Prevents 502 errors from stale sessions.
+- **Node.js v24 compatibility** — strip `Expect` header from forwarded requests. Node 24's undici rejects this header, causing 500 errors on all proxied requests.
+- **`HTTPS_PROXY` no longer set globally on Windows** — routing all HTTPS traffic through the MITM proxy broke Claude Code (502), npm (ECONNREFUSED), and other tools. `HTTPS_PROXY` is now only needed for Codex and should be set per-session.
+- **`squeezr stop` clears `HTTPS_PROXY` from Windows registry** — cleans up the legacy entry left by older versions.
+- **`squeezr update` no longer shows stale "Update available" banner** — update cache is written with the new version after install.
 
 ## [1.16.6] - 2026-04-03
 ### Fixed
