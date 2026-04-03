@@ -112,7 +112,7 @@ function printEnvRefreshHint(port, mitmPort) {
  * after squeezr start/setup/update (child processes can't modify parent env).
  */
 function installShellWrapper() {
-  if (process.platform === 'win32') return installShellWrapper()
+  if (process.platform === 'win32') return installPowerShellWrapper()
   if (isWSL() || process.platform === 'linux' || process.platform === 'darwin') return installBashWrapper()
 }
 
@@ -169,7 +169,7 @@ ${endMarker}`
   }
 }
 
-function installShellWrapper() {
+function installPowerShellWrapper() {
   try {
     const psProfilePath = execSync('powershell -NoProfile -Command "[Environment]::GetFolderPath(\'MyDocuments\') + \'\\WindowsPowerShell\\Microsoft.PowerShell_profile.ps1\'"', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
     const psProfileDir = path.dirname(psProfilePath)

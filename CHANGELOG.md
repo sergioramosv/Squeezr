@@ -2,6 +2,10 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.16.20] - 2026-04-03
+### Fixed
+- **Duplicate `installShellWrapper` declaration crash** — second function was not renamed to `installPowerShellWrapper`, and the dispatcher called itself recursively instead of the PS wrapper.
+
 ## [1.16.19] - 2026-04-03
 ### Fixed
 - **PowerShell wrapper syntax error** — `$` signs in PowerShell code were being interpreted as JS template literal interpolation, breaking the regex and variable references. Now uses string array join instead of template literal.
