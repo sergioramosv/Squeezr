@@ -2,6 +2,10 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.16.9] - 2026-04-03
+### Fixed
+- **`squeezr update` starts the new version directly** — no longer re-execs the old binary via `which squeezr` (which in WSL resolves to the Windows npm path, not the updated Linux one). Now resolves `npm root -g` to find the freshly installed package and spawns the daemon from its `dist/index.js`. Eliminates the stale "Update available" banner after updates.
+
 ## [1.16.8] - 2026-04-03
 ### Fixed
 - **`squeezr update` no longer shows stale "Update available" banner** — writes the new version to the update cache after install, resolves the updated binary from npm global path instead of reusing the old one, and skips the banner entirely for the `update` command.

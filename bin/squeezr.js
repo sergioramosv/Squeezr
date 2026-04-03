@@ -1044,26 +1044,47 @@ switch (command) {
         }
       }
 
-      // Write cache with the new version so neither parent nor child shows stale banner
+      // Clear update check cache
+      try { fs.unlinkSync(UPDATE_CHECK_FILE) } catch {}
+
+      // Resolve the NEW package root from npm global modules
+      let newRoot = ROOT
       try {
-        const newPkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'))
+        const npmRoot = execSync('npm root -g', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+        const candidate = path.join(npmRoot, 'squeezr-ai')
+        if (fs.existsSync(path.join(candidate, 'package.json'))) newRoot = candidate
+      } catch {}
+
+      // Read the new version and write cache so no stale banner appears
+      try {
+        const newPkg = JSON.parse(fs.readFileSync(path.join(newRoot, 'package.json'), 'utf-8'))
         const dir = path.dirname(UPDATE_CHECK_FILE)
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
         fs.writeFileSync(UPDATE_CHECK_FILE, JSON.stringify({ latest: newPkg.version, checkedAt: Date.now() }))
-      } catch {
-        try { fs.unlinkSync(UPDATE_CHECK_FILE) } catch {}
-      }
+        console.log(`\nUpdated to v${newPkg.version}`)
+      } catch {}
 
-      console.log('\nStarting Squeezr...')
-      // Resolve the updated binary from npm global path (process.argv[1] may still be the old version)
-      let newBin = process.argv[1]
-      try {
-        const resolved = execSync('which squeezr', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
-        if (resolved) newBin = resolved
-      } catch {}
-      try {
-        execSync(`node "${newBin}" start`, { stdio: 'inherit' })
-      } catch {}
+      // Start the daemon directly from the new dist/index.js (no re-exec of old binary)
+      console.log('Starting Squeezr...')
+      const newDistIndex = path.join(newRoot, 'dist', 'index.js')
+      const uPort = getPort()
+      const uMitmPort2 = getMitmPort(uPort)
+      const logDir = path.join(os.homedir(), '.squeezr')
+      const logFile = path.join(logDir, 'squeezr.log')
+      fs.mkdirSync(logDir, { recursive: true })
+      const logFd = fs.openSync(logFile, 'a')
+      const child = spawn(process.execPath, [newDistIndex], {
+        detached: true,
+        stdio: ['ignore', logFd, logFd],
+        cwd: newRoot,
+        env: { ...process.env, SQUEEZR_DAEMON: '1' },
+      })
+      child.unref()
+      fs.closeSync(logFd)
+      console.log(`Squeezr started (pid ${child.pid})`)
+      console.log(`  HTTP proxy (Claude/Aider/Gemini): http://localhost:${uPort}`)
+      console.log(`  MITM proxy (Codex):               http://localhost:${uMitmPort2}`)
+      console.log(`  Logs: ${logFile}`)
 
       if (isWSL()) {
         console.log('\n  ⚠️  IMPORTANT: Close this terminal and open a new one so the')
