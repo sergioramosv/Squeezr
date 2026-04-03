@@ -195,11 +195,14 @@ function setupWindows() {
   const caPath = path.join(os.homedir(), '.squeezr', 'mitm-ca', 'ca.crt')
   const vars = {
     ANTHROPIC_BASE_URL: `http://localhost:${port}`,
-    openai_base_url: `http://localhost:${port}`,
+    // openai_base_url NOT set — Codex uses WebSocket and must go via HTTPS_PROXY/MITM,
+    // not through the HTTP proxy. Setting it breaks Codex's ws:// connections.
     GEMINI_API_BASE_URL: `http://localhost:${port}`,
     HTTPS_PROXY: `http://localhost:${mitmPort}`,
     NODE_EXTRA_CA_CERTS: caPath,
-    // Bypass MITM for OpenAI auth and non-Codex endpoints — only chatgpt.com needs interception
+    // SSL_CERT_FILE not set — Rust/native apps use Windows Certificate Store instead
+    // (CA is imported in step 4 below via certutil)
+    // Bypass MITM for auth and API domains — only chatgpt.com needs interception
     NO_PROXY: 'auth.openai.com,login.openai.com,api.openai.com,api.anthropic.com,generativelanguage.googleapis.com',
   }
   for (const [key, value] of Object.entries(vars)) {
@@ -284,9 +287,9 @@ function setupWindows() {
   console.log(`  [ok] Squeezr started in background (pid ${child.pid})`)
   console.log(`  [ok] Logs → ${logFile}`)
 
-  // 4. Trust MITM CA in Windows Certificate Store (for native apps like browsers)
-  //    Node.js apps (Codex) use NODE_EXTRA_CA_CERTS set above instead.
-  //    The CA is generated on first proxy start — wait briefly for it to appear
+  // 4. Trust MITM CA in Windows Certificate Store (for Rust apps like Codex)
+  //    Node.js apps use NODE_EXTRA_CA_CERTS; Rust/native apps need the cert store.
+  //    The CA is generated on first proxy start — wait briefly for it to appear.
   const waitForCa = (retries = 10, interval = 500) => new Promise(resolve => {
     const check = (n) => {
       if (fs.existsSync(caPath)) return resolve(true)
@@ -302,12 +305,18 @@ function setupWindows() {
       printDone()
       return
     }
+    // Try machine store (admin) first, fall back to user store (no admin)
     try {
       execSync(`certutil -addstore -f Root "${caPath}"`, { stdio: 'pipe' })
-      console.log(`  [ok] MITM CA trusted in Windows Certificate Store (Codex TLS interception ready)`)
+      console.log(`  [ok] MITM CA trusted in Windows Certificate Store (machine-level)`)
     } catch {
-      console.log(`  [warn] Could not trust MITM CA — run as Administrator or trust manually:`)
-      console.log(`         certutil -addstore -f Root "${caPath}"`)
+      try {
+        execSync(`certutil -addstore -user Root "${caPath}"`, { stdio: 'pipe' })
+        console.log(`  [ok] MITM CA trusted in Windows Certificate Store (user-level)`)
+      } catch {
+        console.log(`  [warn] Could not trust MITM CA — trust manually:`)
+        console.log(`         certutil -addstore -user Root "${caPath}"`)
+      }
     }
     printDone()
   })
