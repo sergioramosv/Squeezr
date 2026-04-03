@@ -2,6 +2,10 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.14.14] - 2026-04-03
+### Fixed
+- **`start` and `already running` messages show both proxies** — output now lists HTTP proxy (:8080) and MITM proxy (:8081) with their purpose, matching `status` output.
+
 ## [1.14.13] - 2026-04-03
 ### Fixed
 - **`squeezr stop` kills zombies** — now kills all processes on both port 8080 (HTTP proxy) and 8081 (MITM proxy) with `kill -9`. No more stale processes surviving a version update.

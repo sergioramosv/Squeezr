@@ -65,7 +65,10 @@ async function startDaemon() {
     req.setTimeout(2000, () => { req.destroy(); resolve(false) })
   })
   if (running) {
-    console.log(`Squeezr is already running on port ${port}`)
+    const mitmPort = Number(port) + 1
+    console.log(`Squeezr is already running`)
+    console.log(`  HTTP proxy (Claude/Aider/Gemini): http://localhost:${port}`)
+    console.log(`  MITM proxy (Codex):               http://localhost:${mitmPort}`)
     return
   }
 
@@ -83,8 +86,11 @@ async function startDaemon() {
   })
   child.unref()
   fs.closeSync(logFd)
-  console.log(`Squeezr started in background (pid ${child.pid})`)
-  console.log(`Logs → ${logFile}`)
+  const mitmPort = Number(port) + 1
+  console.log(`Squeezr started (pid ${child.pid})`)
+  console.log(`  HTTP proxy (Claude/Aider/Gemini): http://localhost:${port}`)
+  console.log(`  MITM proxy (Codex):               http://localhost:${mitmPort}`)
+  console.log(`  Logs: ${logFile}`)
 }
 
 function showLogs() {
