@@ -531,7 +531,22 @@ async function uninstall() {
   const tomlPath = path.join(ROOT, 'squeezr.toml')
   try { fs.unlinkSync(tomlPath) } catch {}
 
-  // 7. npm uninstall -g (clear HTTPS_PROXY first so npm doesn't hit dead proxy)
+  // 7. Remove PowerShell wrapper function from profile
+  if (process.platform === 'win32') {
+    try {
+      const psProfilePath = execSync('powershell -NoProfile -Command "[Environment]::GetFolderPath(\'MyDocuments\') + \'\\WindowsPowerShell\\Microsoft.PowerShell_profile.ps1\'"', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+      if (fs.existsSync(psProfilePath)) {
+        const content = fs.readFileSync(psProfilePath, 'utf-8')
+        if (content.includes('# squeezr wrapper')) {
+          const cleaned = content.replace(/\n?# squeezr wrapper[\s\S]*?# end squeezr wrapper\n?/g, '')
+          fs.writeFileSync(psProfilePath, cleaned)
+          console.log(`  [ok] Removed PowerShell wrapper from ${psProfilePath}`)
+        }
+      }
+    } catch {}
+  }
+
+  // 8. npm uninstall -g (clear HTTPS_PROXY first so npm doesn't hit dead proxy)
   console.log('  [..] Uninstalling npm package...')
   const cleanEnv = { ...process.env, HTTPS_PROXY: '', https_proxy: '', HTTP_PROXY: '', http_proxy: '' }
   try {
@@ -579,6 +594,42 @@ function setupWindows() {
     } catch {
       console.log(`  [skip] ${key} could not be set`)
     }
+  }
+
+  // 1b. Install PowerShell wrapper function so env vars are refreshed automatically
+  //     after squeezr start/setup/update (child processes can't modify parent env).
+  try {
+    const psProfilePath = execSync('powershell -NoProfile -Command "[Environment]::GetFolderPath(\'MyDocuments\') + \'\\WindowsPowerShell\\Microsoft.PowerShell_profile.ps1\'"', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+    const psProfileDir = path.dirname(psProfilePath)
+    if (!fs.existsSync(psProfileDir)) fs.mkdirSync(psProfileDir, { recursive: true })
+    const psMarker = '# squeezr wrapper'
+    const psFunction = `${psMarker}
+function squeezr {
+  $bin = (Get-Command squeezr.cmd -ErrorAction SilentlyContinue).Source
+  if (-not $bin) { $bin = (Get-Command squeezr -ErrorAction SilentlyContinue).Source }
+  & node $bin @args
+  if ($args[0] -match '^(start|setup|update)$') {
+    @('ANTHROPIC_BASE_URL','GEMINI_API_BASE_URL','HTTPS_PROXY','NODE_EXTRA_CA_CERTS') | ForEach-Object {
+      $v = [Environment]::GetEnvironmentVariable($_, 'User')
+      if ($v) { [Environment]::SetEnvironmentVariable($_, $v, 'Process') }
+    }
+  }
+  if ($args[0] -eq 'stop') {
+    [Environment]::SetEnvironmentVariable('HTTPS_PROXY', $null, 'Process')
+  }
+}
+# end squeezr wrapper`
+    const existing = fs.existsSync(psProfilePath) ? fs.readFileSync(psProfilePath, 'utf-8') : ''
+    if (!existing.includes(psMarker)) {
+      fs.appendFileSync(psProfilePath, `\n${psFunction}\n`)
+      console.log(`  [ok] PowerShell wrapper added to ${psProfilePath}`)
+    } else {
+      const updated = existing.replace(/# squeezr wrapper[\s\S]*?# end squeezr wrapper/, psFunction)
+      fs.writeFileSync(psProfilePath, updated)
+      console.log(`  [ok] PowerShell wrapper updated in ${psProfilePath}`)
+    }
+  } catch (err) {
+    console.log(`  [skip] PowerShell profile wrapper could not be installed`)
   }
 
   // 2. Auto-start: try NSSM (Windows service, survives crashes) → fallback to Task Scheduler
