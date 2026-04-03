@@ -1,9 +1,6 @@
 import { readFileSync, existsSync } from 'fs'
-import { join, dirname } from 'path'
-import { fileURLToPath } from 'url'
+import { join } from 'path'
 import { parse } from 'smol-toml'
-
-const __dirname = dirname(fileURLToPath(import.meta.url))
 
 interface TomlConfig {
   proxy?: { port?: number }
@@ -54,7 +51,7 @@ function deepMerge(base: TomlConfig, override: TomlConfig): TomlConfig {
 }
 
 function loadToml(): TomlConfig {
-  const globalPath = join(__dirname, '..', 'squeezr.toml')
+  const globalPath = join(import.meta.dirname, '..', 'squeezr.toml')
   const localPath = join(process.cwd(), '.squeezr.toml')
   const globalCfg = loadTomlFile(globalPath)
   const localCfg = loadTomlFile(localPath)
