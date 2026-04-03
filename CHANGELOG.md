@@ -2,6 +2,10 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.16.24] - 2026-04-03
+### Fixed
+- **PowerShell wrapper corruption fixed for real** — rewrote the PS wrapper to avoid all `$` signs that were being eaten by JS string handling. Uses `-contains` instead of `-match` regex, `foreach` instead of `ForEach-Object`, and only double quotes. CRLF line endings for Windows.
+
 ## [1.16.23] - 2026-04-03
 ### Fixed
 - **Removed confusing "Run this to activate" hint** — the shell wrapper handles env var refresh automatically. The hint only showed when no wrapper existed and caused confusion with clipboard quote issues. Now the wrapper is the only mechanism — if it's new, the ONE-TIME SETUP banner shows; if it's already installed, nothing extra is printed.
