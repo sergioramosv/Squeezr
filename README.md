@@ -2,7 +2,7 @@
 
 **Token compression proxy for AI coding CLIs.** Sits between your CLI and the API, compresses context on the fly, saves thousands of tokens per session.
 
-[![npm](https://img.shields.io/npm/v/squeezr-ai)](https://www.npmjs.com/package/squeezr-ai) [![license](https://img.shields.io/npm/l/squeezr-ai)](LICENSE) [![tests](https://img.shields.io/badge/tests-190%20passing-brightgreen)]()
+[![npm](https://img.shields.io/npm/v/squeezr-ai)](https://www.npmjs.com/package/squeezr-ai) [![license](https://img.shields.io/npm/l/squeezr-ai)](LICENSE) [![tests](https://img.shields.io/badge/tests-219%20passing-brightgreen)]()
 
 ## Supported CLIs
 
@@ -24,7 +24,7 @@ squeezr start
 ```
 
 `squeezr setup` handles everything automatically:
-- Sets `ANTHROPIC_BASE_URL`, `GEMINI_API_BASE_URL`, `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `NO_PROXY`
+- Sets `ANTHROPIC_BASE_URL`, `GEMINI_API_BASE_URL`, `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`
 - Registers auto-start (launchd on macOS, systemd on Linux, Task Scheduler/NSSM on Windows)
 - **Windows:** imports the MITM CA into the Windows Certificate Store (user-level, no admin required) so Rust-based CLIs like Codex trust the proxy's TLS certificates
 - **macOS/Linux:** generates a CA bundle at `~/.squeezr/mitm-ca/bundle.crt` for `SSL_CERT_FILE`
@@ -91,6 +91,8 @@ Compression aggressiveness scales with context window usage:
 ## Codex support (MITM proxy)
 
 Codex uses WebSocket over TLS to `chatgpt.com` with OAuth authentication — it cannot be proxied via `OPENAI_BASE_URL`. Squeezr runs a TLS-terminating MITM proxy on port 8081 that intercepts and compresses WebSocket frames. See [CODEX.md](CODEX.md) for the full technical breakdown.
+
+The MITM proxy **only intercepts `chatgpt.com`** traffic. All other HTTPS requests (npm, git, curl, etc.) pass through as a transparent TCP tunnel — no certificate needed, no interference.
 
 ## Configuration
 
@@ -169,7 +171,7 @@ Squeezr uses cheap/free models for AI compression (the deterministic layer is pu
 
 ```bash
 squeezr setup      # configure env vars, auto-start, CA trust
-squeezr start      # start the proxy (foreground)
+squeezr start      # start the proxy (auto-restarts if version mismatch after update)
 squeezr stop       # stop the proxy
 squeezr status     # check if proxy is running
 squeezr logs       # show last 50 log lines
