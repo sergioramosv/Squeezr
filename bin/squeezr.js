@@ -106,43 +106,49 @@ function showLogs() {
 
 function stopProxy() {
   const port = process.env.SQUEEZR_PORT || 8080
-  try {
-    let pid
-    if (process.platform === 'win32') {
-      const out = execSync(`netstat -ano | findstr ":${port} "`, { encoding: 'utf-8', stdio: 'pipe' })
-      const match = out.match(/LISTENING\s+(\d+)/)
-      pid = match?.[1]
-    } else {
-      // Use -sTCP:LISTEN to get only the listening process, not connected clients.
-      // lsof may return multiple PIDs without this flag.
-      try {
-        pid = execSync(`lsof -ti :${port} -sTCP:LISTEN`, { encoding: 'utf-8', stdio: 'pipe' }).trim()
-      } catch {
-        // fallback: fuser (available on most Linux/WSL)
+  const mitmPort = Number(port) + 1
+  const ports = [port, mitmPort]
+  let killed = false
+
+  for (const p of ports) {
+    try {
+      let pids = []
+      if (process.platform === 'win32') {
+        const out = execSync(`netstat -ano | findstr ":${p} "`, { encoding: 'utf-8', stdio: 'pipe' })
+        const matches = [...out.matchAll(/LISTENING\s+(\d+)/g)]
+        pids = [...new Set(matches.map(m => m[1]))]
+      } else {
         try {
-          pid = execSync(`fuser ${port}/tcp 2>/dev/null`, { encoding: 'utf-8', stdio: 'pipe' }).trim()
+          const out = execSync(`lsof -ti :${p} -sTCP:LISTEN`, { encoding: 'utf-8', stdio: 'pipe' }).trim()
+          pids = out.split(/\s+/).filter(Boolean)
+        } catch {
+          try {
+            const out = execSync(`fuser ${p}/tcp 2>/dev/null`, { encoding: 'utf-8', stdio: 'pipe' }).trim()
+            pids = out.split(/\s+/).filter(Boolean)
+          } catch {}
+        }
+      }
+      for (const pid of pids) {
+        try {
+          if (process.platform === 'win32') {
+            execSync(`taskkill /F /PID ${pid}`, { stdio: 'pipe' })
+          } else {
+            execSync(`kill -9 ${pid}`, { stdio: 'pipe' })
+          }
+          console.log(`Squeezr stopped (pid ${pid} on port ${p})`)
+          killed = true
         } catch {}
       }
-    }
-    if (!pid) {
-      console.log(`Squeezr is not running on port ${port}`)
-      return
-    }
-    // Take only the first PID in case multiple are returned
-    pid = pid.split(/\s+/)[0]
-    if (process.platform === 'win32') {
-      execSync(`taskkill /F /PID ${pid}`, { stdio: 'pipe' })
-    } else {
-      execSync(`kill ${pid}`, { stdio: 'pipe' })
-    }
-    console.log(`Squeezr stopped (pid ${pid})`)
-  } catch {
+    } catch {}
+  }
+  if (!killed) {
     console.log(`Squeezr is not running on port ${port}`)
   }
 }
 
 async function checkStatus() {
   const port = process.env.SQUEEZR_PORT || 8080
+  const mitmPort = Number(port) + 1
   return new Promise(resolve => {
     const req = http.get(`http://localhost:${port}/squeezr/health`, res => {
       let data = ''
@@ -150,7 +156,9 @@ async function checkStatus() {
       res.on('end', () => {
         try {
           const json = JSON.parse(data)
-          console.log(`Squeezr is running  (v${json.version} on port ${port})`)
+          console.log(`Squeezr is running  (v${json.version})`)
+          console.log(`  HTTP proxy (Claude/Aider/Gemini): http://localhost:${port}`)
+          console.log(`  MITM proxy (Codex):               http://localhost:${mitmPort}`)
         } catch {
           console.log(`Squeezr is running on port ${port}`)
         }
@@ -158,7 +166,7 @@ async function checkStatus() {
       })
     })
     req.on('error', () => {
-      console.log(`Squeezr is NOT running on port ${port}`)
+      console.log(`Squeezr is NOT running`)
       console.log('Start it with: squeezr start')
       resolve(false)
     })
