@@ -5,6 +5,13 @@ All notable changes to Squeezr will be documented here.
 ## [1.17.4] - 2026-04-06
 ### Fixed
 - Repackage: removed in-progress `cursorMitm.js` that was accidentally included in 1.17.3 dist. No functional changes vs 1.17.3.
+## [1.17.5] - 2026-04-06
+### Added
+- **Real-time web dashboard** — `GET /squeezr/dashboard` opens a live dark-theme dashboard. Updates every 2s via SSE. Shows tokens saved, compression %, requests, estimated cost saved, per-tool breakdown, sparkline chart, context pressure bars, and cache sizes.
+- **Compression mode selector** — Switch 🐢 Soft / ⚖️ Normal / 🔥 Aggressive / 🚨 Critical from the dashboard with instant effect via `POST /squeezr/config { mode }`.
+- **Hot-reload compression mode** — Mode changes take effect immediately without restarting the proxy. Overrides TOML thresholds and keepRecent in memory.
+- **Port conflict auto-recovery** — On `EADDRINUSE`, Squeezr scans upward and binds to the first free port, printing a clear warning instead of crashing.
+- **Dashboard URL on startup** — `http://localhost:PORT/squeezr/dashboard` printed when proxy starts.
 
 ## [1.17.3] - 2026-04-06
 ### Fixed

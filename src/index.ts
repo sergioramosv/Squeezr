@@ -1,4 +1,5 @@
 import { createAdaptorServer } from '@hono/node-server'
+import { createServer } from 'node:net'
 import { app, stats } from './server.js'
 import { config } from './config.js'
 import { VERSION } from './version.js'
@@ -10,7 +11,30 @@ import { loadExpandStore, persistExpandStore } from './expand.js'
 loadSessionCache()
 loadExpandStore()
 
-const PORT = config.port
+// ── Port conflict detection ───────────────────────────────────────────────────
+// Instead of crashing with EADDRINUSE, find the next available port automatically.
+
+function isPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const srv = createServer()
+    srv.once('error', () => resolve(false))
+    srv.once('listening', () => srv.close(() => resolve(true)))
+    srv.listen(port)
+  })
+}
+
+async function findFreePort(start: number, max = 10): Promise<number> {
+  for (let i = 0; i < max; i++) {
+    if (await isPortFree(start + i)) return start + i
+  }
+  throw new Error(`No free port found in range ${start}–${start + max - 1}`)
+}
+
+const PORT = await findFreePort(config.port)
+if (PORT !== config.port) {
+  console.warn(`\n⚠️  Port ${config.port} is already in use. Using port ${PORT} instead.`)
+  console.warn(`   Update squeezr.toml or run: squeezr ports\n`)
+}
 
 const httpServer = createAdaptorServer({ fetch: app.fetch })
 
@@ -22,7 +46,7 @@ httpServer.listen(PORT, () => {
   console.log(`Mode: ${config.dryRun ? 'dry-run' : 'active'}`)
   if (config.disabled) console.log('WARNING: compression is disabled')
   console.log(`Backends: Anthropic → Haiku | OpenAI → GPT-4o-mini | Gemini → Flash-8B | Local → ${config.localCompressionModel}`)
-  console.log(`Stats: http://localhost:${PORT}/squeezr/stats`)
+  console.log(`Dashboard: http://localhost:${PORT}/squeezr/dashboard`)
 })
 
 // Start MITM proxy for Codex OAuth (chatgpt.com/backend-api)

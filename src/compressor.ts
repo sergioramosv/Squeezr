@@ -5,6 +5,7 @@ import { preprocess, preprocessForTool, hitPattern } from './deterministic.js'
 import { storeOriginal } from './expand.js'
 import { hashText, getBlock, setBlock, SessionBlock } from './sessionCache.js'
 import type { Config } from './config.js'
+import { effectiveThreshold, effectiveKeepRecent, aiEnabled } from './config.js'
 
 export interface Savings {
   compressed: number
@@ -180,7 +181,7 @@ export async function compressAnthropicMessages(
   if (config.disabled) return [messages, emptySavings()]
 
   const pressure = estimatePressure(messages, systemExtraChars)
-  const threshold = config.thresholdForPressure(pressure)
+  const threshold = effectiveThreshold(config, pressure)
   const { nameMap: toolIdMap, skipIds } = buildAnthropicToolIdMap(messages)
   const allResults = extractAnthropicToolResults(messages, toolIdMap)
     .filter(r => !skipIds.has(r.toolUseId) && !config.shouldSkipTool(r.tool))
@@ -241,7 +242,7 @@ export async function compressAnthropicMessages(
   }
 
   // ── Step 2: AI compression for old blocks above threshold ─────────────────
-  const candidates = allResults.slice(0, Math.max(0, allResults.length - config.keepRecent))
+  const candidates = allResults.slice(0, Math.max(0, allResults.length - effectiveKeepRecent(config)))
   const toProcess = candidates.filter(c => c.text.length >= threshold && !dedupedSet.has(`${c.index}:${c.subIndex}`))
 
   if (toProcess.length === 0) return [msgs, emptySavings()]
@@ -260,7 +261,7 @@ export async function compressAnthropicMessages(
     const cached = getBlock(hashText(c.text))
     if (cached) {
       sessionHits.push({ index: c.index, subIndex: c.subIndex, tool: c.tool, block: cached })
-    } else if (c.index === lastMsgIdx && !config.aiSkipTools.has(c.tool.toLowerCase())) {
+    } else if (aiEnabled() && c.index === lastMsgIdx && !config.aiSkipTools.has(c.tool.toLowerCase())) {
       // Only AI-compress genuinely new blocks (from the last user message).
       // Historical uncached blocks skip AI compression → prevents burst on first activation.
       toCompress.push(c)
@@ -342,7 +343,7 @@ export async function compressOpenAIMessages(
   if (config.disabled) return [messages, emptySavings()]
 
   const pressure = estimatePressure(messages)
-  const threshold = config.thresholdForPressure(pressure)
+  const threshold = effectiveThreshold(config, pressure)
   const allResults = extractOpenAIToolResults(messages)
     .filter(r => !r.skip && !config.shouldSkipTool(r.tool))
 
@@ -389,7 +390,7 @@ export async function compressOpenAIMessages(
   }
 
   // Step 2: AI compression for old blocks above threshold
-  const candidates = allResults.slice(0, Math.max(0, allResults.length - config.keepRecent))
+  const candidates = allResults.slice(0, Math.max(0, allResults.length - effectiveKeepRecent(config)))
   const toProcess = candidates.filter(c => c.text.length >= threshold && !dedupedIndices.has(c.index))
 
   if (toProcess.length === 0) return [msgs, emptySavings()]
@@ -410,7 +411,7 @@ export async function compressOpenAIMessages(
     const cached = getBlock(hashText(c.text))
     if (cached) {
       sessionHits.push({ index: c.index, tool: c.tool, block: cached })
-    } else if (c.index > newStartIdx && !config.aiSkipTools.has(c.tool.toLowerCase())) {
+    } else if (aiEnabled() && c.index > newStartIdx && !config.aiSkipTools.has(c.tool.toLowerCase())) {
       // Only AI-compress new tool results (after last assistant turn) — prevents burst on first activation.
       toCompress.push(c)
     }
@@ -466,7 +467,7 @@ export async function compressGeminiContents(
   if (config.disabled) return [contents, emptySavings()]
 
   const pressure = estimatePressure(contents)
-  const threshold = config.thresholdForPressure(pressure)
+  const threshold = effectiveThreshold(config, pressure)
 
   const allResults: Array<{ index: number; subIndex: number; text: string; tool: string }> = []
   for (let i = 0; i < contents.length; i++) {
@@ -523,7 +524,7 @@ export async function compressGeminiContents(
   if (detSaved > 0) console.log(`[squeezr/det/gemini] Deterministic: -${detSaved.toLocaleString()} chars across ${allResults.length} block(s)`)
 
   // Step 2: AI compression for old blocks above threshold
-  const candidates = allResults.slice(0, Math.max(0, allResults.length - config.keepRecent))
+  const candidates = allResults.slice(0, Math.max(0, allResults.length - effectiveKeepRecent(config)))
     .filter(c => c.text.length >= threshold && !geminiDedupedSet.has(`${c.index}:${c.subIndex}`))
 
   if (candidates.length === 0) return [cts, emptySavings()]
@@ -538,7 +539,7 @@ export async function compressGeminiContents(
   for (const c of candidates) {
     const cached = getBlock(hashText(c.text))
     if (cached) sessionHits.push({ index: c.index, subIndex: c.subIndex, tool: c.tool, block: cached })
-    else toCompress.push(c)
+    else if (aiEnabled()) toCompress.push(c)
   }
 
   const freshlyCompressed = toCompress.length > 0

@@ -148,4 +148,47 @@ export class Config {
   }
 }
 
+// ── Runtime overrides (hot-reload from dashboard) ─────────────────────────────
+// These override the TOML config values without restarting the proxy.
+
+export type CompressionMode = 'soft' | 'normal' | 'aggressive' | 'critical'
+
+export interface RuntimeOverrides {
+  mode: CompressionMode
+  threshold?: number
+  keepRecent?: number
+  aiEnabled?: boolean
+}
+
+const MODES: Record<CompressionMode, Omit<RuntimeOverrides, 'mode'>> = {
+  soft:       { threshold: 3000, keepRecent: 10, aiEnabled: false },
+  normal:     { threshold: 800,  keepRecent: 3,  aiEnabled: true  },
+  aggressive: { threshold: 200,  keepRecent: 1,  aiEnabled: true  },
+  critical:   { threshold: 50,   keepRecent: 0,  aiEnabled: true  },
+}
+
+export const runtimeOverrides: RuntimeOverrides = { mode: 'normal' }
+
+export function applyMode(mode: CompressionMode): void {
+  const preset = MODES[mode]
+  Object.assign(runtimeOverrides, { mode, ...preset })
+  console.log(`[squeezr] Mode → ${mode} (threshold=${preset.threshold}, keepRecent=${preset.keepRecent}, ai=${preset.aiEnabled})`)
+}
+
+/** Effective threshold — runtime override wins over TOML adaptive threshold */
+export function effectiveThreshold(config: Config, pressure: number): number {
+  if (runtimeOverrides.threshold !== undefined) return runtimeOverrides.threshold
+  return config.thresholdForPressure(pressure)
+}
+
+/** Effective keepRecent — runtime override wins */
+export function effectiveKeepRecent(config: Config): number {
+  return runtimeOverrides.keepRecent ?? config.keepRecent
+}
+
+/** Whether AI compression is enabled right now */
+export function aiEnabled(): boolean {
+  return runtimeOverrides.aiEnabled ?? true
+}
+
 export const config = new Config()
