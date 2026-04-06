@@ -2,6 +2,10 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.17.7] - 2026-04-06
+### Fixed
+- Removed stale `dist/cursorMitm.js` from npm package (leaked again after clean build). Added `prepack` script to auto-delete it permanently on every publish.
+
 ## [1.17.6] - 2026-04-06
 ### Added
 - **Squeezr MCP server** — Universal MCP server (`squeezr-mcp`) compatible with Claude Code, Cursor, Windsurf, Cline, and any MCP-capable AI CLI. Exposes 5 tools:

@@ -1,0 +1,6 @@
+# Exclude in-progress files not ready for release
+dist/cursorMitm.js
+dist/cursorMitm.d.ts
+dist/__tests__/cursorMitm.test.js
+dist/__tests__/cursorMitm.test.d.ts
+src/
