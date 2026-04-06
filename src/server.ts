@@ -79,6 +79,25 @@ async function proxyStream(upstream: string, body: unknown, headers: Record<stri
 
 export const app = new Hono()
 
+// ── CORS middleware (required for Cursor IDE and browser-based tools) ─────────
+// Cursor's Electron renderer sends OPTIONS preflight before every POST.
+// Without this the request is blocked and Cursor shows a network error.
+
+app.use('*', async (c, next) => {
+  if (c.req.method === 'OPTIONS') {
+    return c.body(null, 204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
+      'Access-Control-Allow-Headers': '*',
+      'Access-Control-Max-Age': '86400',
+    })
+  }
+  await next()
+  c.res.headers.set('Access-Control-Allow-Origin', '*')
+  c.res.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS')
+  c.res.headers.set('Access-Control-Allow-Headers', '*')
+})
+
 // ── Anthropic / Claude Code ───────────────────────────────────────────────────
 
 app.post('/v1/messages', async (c) => {
@@ -90,15 +109,29 @@ app.post('/v1/messages', async (c) => {
     ?? process.env.ANTHROPIC_API_KEY
     ?? ''
 
-  // System prompt compression
-  if (config.compressSystemPrompt && !config.dryRun && typeof body.system === 'string') {
-    body.system = await compressSystemPrompt(body.system, apiKey, 'haiku')
+  // System prompt compression (handles both string and array formats — Claude Code sends array)
+  if (config.compressSystemPrompt && !config.dryRun) {
+    if (typeof body.system === 'string') {
+      body.system = await compressSystemPrompt(body.system, apiKey, 'haiku')
+    } else if (Array.isArray(body.system)) {
+      for (const block of body.system as Array<{ type?: string; text?: string }>) {
+        if (block.type === 'text' && typeof block.text === 'string') {
+          block.text = await compressSystemPrompt(block.text, apiKey, 'haiku')
+        }
+      }
+    }
   }
 
   const messages = (body.messages ?? []) as unknown[]
   const originalChars = estimateChars(messages)
 
-  const [compressedMsgs, savings] = await compressAnthropicMessages(messages as Parameters<typeof compressAnthropicMessages>[0], apiKey, config)
+  const systemExtraChars = typeof body.system === 'string'
+    ? body.system.length
+    : Array.isArray(body.system)
+      ? (body.system as Array<{ text?: string }>).reduce((s, b) => s + (b.text?.length ?? 0), 0)
+      : 0
+
+  const [compressedMsgs, savings] = await compressAnthropicMessages(messages as Parameters<typeof compressAnthropicMessages>[0], apiKey, config, systemExtraChars)
   body.messages = compressedMsgs
 
   // Inject expand tool

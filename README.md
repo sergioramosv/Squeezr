@@ -2,7 +2,7 @@
 
 **Token compression proxy for AI coding CLIs.** Sits between your CLI and the API, compresses context on the fly, saves thousands of tokens per session.
 
-[![npm](https://img.shields.io/npm/v/squeezr-ai)](https://www.npmjs.com/package/squeezr-ai) [![license](https://img.shields.io/npm/l/squeezr-ai)](LICENSE) [![tests](https://img.shields.io/badge/tests-219%20passing-brightgreen)]()
+[![npm](https://img.shields.io/npm/v/squeezr-ai)](https://www.npmjs.com/package/squeezr-ai) [![license](https://img.shields.io/npm/l/squeezr-ai)](LICENSE) [![tests](https://img.shields.io/badge/tests-237%20passing-brightgreen)]()
 
 ## Supported CLIs
 
@@ -14,6 +14,8 @@
 | Gemini CLI | HTTP to Gemini API | `GEMINI_API_BASE_URL=http://localhost:8080` |
 | Ollama | HTTP (local) | Transparent via dummy API key detection |
 | **Codex** | **WebSocket to chatgpt.com** | **TLS-terminating MITM proxy on :8081** |
+| **Cursor IDE** | **ConnectRPC/HTTP2 to api2.cursor.sh** | **`squeezr cursor` — MITM proxy on :8082** |
+| Continue (VS Code) | HTTP to OpenAI-compat | `apiBase: http://localhost:8080/v1` |
 
 ## Quick start
 
@@ -109,8 +111,9 @@ threshold = 800          # min chars to trigger compression
 keep_recent = 3          # last N results left uncompressed
 compress_system_prompt = true
 compress_conversation = false  # aggressive: compress assistant messages too
-# skip_tools = ["Read"]       # never compress these tools
+# skip_tools = ["Read"]       # skip ALL compression for these tools (deterministic + AI)
 # only_tools = ["Bash"]       # only compress these tools
+ai_skip_tools = ["Read"]      # skip AI compression only (default); deterministic still runs
 
 [cache]
 enabled = true

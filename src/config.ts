@@ -15,6 +15,7 @@ interface TomlConfig {
     compress_conversation?: boolean
     skip_tools?: string[]
     only_tools?: string[]
+    ai_skip_tools?: string[]
   }
   cache?: { enabled?: boolean; max_entries?: number }
   adaptive?: {
@@ -79,6 +80,7 @@ export class Config {
   readonly dryRun: boolean
   readonly skipTools: Set<string>
   readonly onlyTools: Set<string>
+  readonly aiSkipTools: Set<string>
   readonly cacheEnabled: boolean
   readonly cacheMaxEntries: number
   readonly adaptiveEnabled: boolean
@@ -109,6 +111,7 @@ export class Config {
     this.dryRun = env('SQUEEZR_DRY_RUN', '') === '1'
     this.skipTools = new Set((c.skip_tools ?? []).map(t => t.toLowerCase()))
     this.onlyTools = new Set((c.only_tools ?? []).map(t => t.toLowerCase()))
+    this.aiSkipTools = new Set((c.ai_skip_tools ?? ['read']).map(t => t.toLowerCase()))
     this.cacheEnabled = ca.enabled ?? true
     this.cacheMaxEntries = ca.max_entries ?? 1000
     this.adaptiveEnabled = ad.enabled ?? true
