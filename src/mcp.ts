@@ -28,6 +28,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 import { createRequire } from 'node:module'
+import { execSync } from 'node:child_process'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -151,6 +152,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         'Shows which deterministic patterns fired (duplicate reads, lock files, ' +
         'repeated errors, large outputs) and how many tokens they saved or wasted. ' +
         'Useful for improving how you use Claude to spend fewer tokens.',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'squeezr_stop',
+      description:
+        'Stop the Squeezr proxy gracefully. The proxy will persist its caches and exit. ' +
+        'After stopping, tool results will no longer be compressed until you restart with: squeezr start',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'squeezr_check_updates',
+      description:
+        'Check if a newer version of Squeezr is available on npm. ' +
+        'Compares the running version to the latest published release and returns ' +
+        'the update command if an update is available.',
+      inputSchema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'squeezr_update',
+      description:
+        'Update Squeezr to the latest version from npm. ' +
+        'Runs: npm install -g squeezr-ai@latest ' +
+        'After updating, restart the proxy with: squeezr start',
       inputSchema: { type: 'object', properties: {}, required: [] },
     },
   ],
@@ -412,6 +436,112 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           'Tip: use squeezr_set_mode to control compression aggressiveness.',
         ].join('\n'),
       }],
+    }
+  }
+
+  // ── squeezr_stop ────────────────────────────────────────────────────────────
+  if (name === 'squeezr_stop') {
+    const result = await proxyPost('/squeezr/control/stop', {})
+
+    if (!result) {
+      return {
+        content: [{ type: 'text', text: '❌ Squeezr proxy is not running (or already stopped).' }],
+        isError: false,
+      }
+    }
+
+    return {
+      content: [{
+        type: 'text',
+        text: [
+          '✅ Squeezr proxy is shutting down gracefully.',
+          '   Caches persisted to ~/.squeezr/',
+          '',
+          'Restart with: squeezr start',
+        ].join('\n'),
+      }],
+    }
+  }
+
+  // ── squeezr_check_updates ────────────────────────────────────────────────────
+  if (name === 'squeezr_check_updates') {
+    let latest = 'unknown'
+    let current = pkg.version
+
+    try {
+      const npmRes = await fetch('https://registry.npmjs.org/squeezr-ai/latest', {
+        signal: AbortSignal.timeout(5000),
+      })
+      if (npmRes.ok) {
+        const data = await npmRes.json() as { version: string }
+        latest = data.version
+      }
+    } catch { /* network error */ }
+
+    const isUpToDate = current === latest || latest === 'unknown'
+
+    return {
+      content: [{
+        type: 'text',
+        text: isUpToDate
+          ? [
+              `✅ Squeezr is up to date (v${current})`,
+              latest === 'unknown' ? '   (Could not reach npm registry to verify)' : '',
+            ].filter(Boolean).join('\n')
+          : [
+              `🆕 Update available: v${current} → v${latest}`,
+              '',
+              'Run to update:',
+              '   squeezr update',
+              '   (or: npm install -g squeezr-ai@latest)',
+            ].join('\n'),
+      }],
+    }
+  }
+
+  // ── squeezr_update ────────────────────────────────────────────────────────────
+  if (name === 'squeezr_update') {
+    // First check latest version
+    let latest = 'latest'
+    try {
+      const npmRes = await fetch('https://registry.npmjs.org/squeezr-ai/latest', {
+        signal: AbortSignal.timeout(5000),
+      })
+      if (npmRes.ok) {
+        const data = await npmRes.json() as { version: string }
+        latest = data.version
+      }
+    } catch { /* ignore */ }
+
+    try {
+      execSync('npm install -g squeezr-ai@latest', { timeout: 60000, stdio: 'pipe' })
+      return {
+        content: [{
+          type: 'text',
+          text: [
+            `✅ Squeezr updated to v${latest}`,
+            '',
+            'Restart the proxy to use the new version:',
+            '   squeezr start',
+          ].join('\n'),
+        }],
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return {
+        content: [{
+          type: 'text',
+          text: [
+            '❌ Update failed.',
+            '',
+            'Try manually:',
+            '   npm install -g squeezr-ai@latest',
+            '',
+            `Error: ${msg.slice(0, 300)}`,
+          ].join('\n'),
+        }],
+        isError: true,
+      }
     }
   }
 

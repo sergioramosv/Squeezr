@@ -2,6 +2,18 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.17.8] - 2026-04-06
+### Added
+- **Dashboard sidebar navigation** — 4-page SPA: Overview, Projects, History, Settings. Replaces the single-page layout.
+- **SVG icons throughout** — sidebar nav icons and compression mode buttons (Soft/Normal/Aggressive/Critical) now use clean SVG icons instead of emojis.
+- **Per-project stats** — Squeezr detects which project is active by extracting the working directory from Claude Code's system prompt (`<cwd>` tag). Projects page shows aggregate stats across all sessions per project.
+- **Session history** — History page shows all past proxy sessions grouped by project and day, with start/end time, duration, request count, and tokens saved. Persists to `~/.squeezr/history.json`.
+- **Project-aware Overview** — project name badge shown in the dashboard header when a project is detected.
+- **New API endpoints** — `GET /squeezr/history`, `GET /squeezr/projects`, `POST /squeezr/control/stop`.
+- **MCP: squeezr_stop** — stop the proxy gracefully from any MCP-compatible AI CLI.
+- **MCP: squeezr_check_updates** — check npm registry for newer Squeezr version.
+- **MCP: squeezr_update** — update to latest version via `npm install -g squeezr-ai@latest`.
+
 ## [1.17.7] - 2026-04-06
 ### Fixed
 - Removed stale `dist/cursorMitm.js` from npm package (leaked again after clean build). Added `prepack` script to auto-delete it permanently on every publish.

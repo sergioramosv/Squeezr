@@ -15,7 +15,13 @@ export class Stats {
   private totalCompressions = 0
   private totalSessionCacheHits = 0
   private byTool: Record<string, ToolData> = {}
+  private byProject: Record<string, {
+    requests: number; savedChars: number; savedTokens: number
+  }> = {}
+  private currentProject = 'unknown'
   private sessionStart = Date.now()
+  private lastOriginalChars = 0
+  private lastCompressedChars = 0
 
   record(originalChars: number, compressedChars: number, savings: Savings): void {
     this.requests++
@@ -23,6 +29,8 @@ export class Stats {
     this.totalCompressedChars += compressedChars
     this.totalCompressions += savings.compressed
     this.totalSessionCacheHits += savings.sessionCacheHits
+    this.lastOriginalChars = originalChars
+    this.lastCompressedChars = compressedChars
 
     for (const entry of savings.byTool) {
       if (!this.byTool[entry.tool]) this.byTool[entry.tool] = { count: 0, savedChars: 0, originalChars: 0 }
@@ -38,6 +46,28 @@ export class Stats {
     }
 
     this.persist()
+  }
+
+  /** Call instead of record() when a project name is known. */
+  recordWithProject(project: string, originalChars: number, compressedChars: number, savings: Savings): void {
+    if (project !== 'unknown') this.currentProject = project
+    this.record(originalChars, compressedChars, savings)
+
+    // Per-project session totals
+    const p = this.currentProject
+    if (!this.byProject[p]) this.byProject[p] = { requests: 0, savedChars: 0, savedTokens: 0 }
+    this.byProject[p].requests++
+    const saved = originalChars - compressedChars
+    this.byProject[p].savedChars += saved
+    this.byProject[p].savedTokens = Math.round(this.byProject[p].savedChars / CHARS_PER_TOKEN)
+  }
+
+  setProject(project: string): void {
+    if (project !== 'unknown') this.currentProject = project
+  }
+
+  currentProjectName(): string {
+    return this.currentProject
   }
 
   summary() {
@@ -62,6 +92,9 @@ export class Stats {
       savings_pct: pct,
       uptime_seconds: Math.round((Date.now() - this.sessionStart) / 1000),
       by_tool: byToolOut,
+      current_project: this.currentProject,
+      last_original_chars: this.lastOriginalChars,
+      last_compressed_chars: this.lastCompressedChars,
     }
   }
 

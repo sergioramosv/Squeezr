@@ -24,6 +24,59 @@ import { compressSystemPrompt } from './systemPrompt.js'
 import { sessionCacheSize } from './sessionCache.js'
 import { detPatternHits } from './deterministic.js'
 import { VERSION } from './version.js'
+import {
+  recordRequest,
+  getHistorySessions,
+  getCurrentSession,
+  getProjectAggregates,
+  getAllSessionsForHistory,
+} from './history.js'
+
+// ── Project name extraction ────────────────────────────────────────────────────
+// Reads the CWD from Claude Code's system prompt (injected as <cwd>…</cwd> or
+// "current working directory: …") and returns the last path component.
+
+function extractProjectName(body: Record<string, unknown>): string {
+  try {
+    const system = body.system
+    let text = ''
+    if (Array.isArray(system)) {
+      text = (system as Array<{ type?: string; text?: string }>)
+        .map(s => s.text ?? '')
+        .join(' ')
+    } else if (typeof system === 'string') {
+      text = system
+    }
+
+    // Claude Code format: <cwd>/path/to/project</cwd>
+    const xmlCwd = text.match(/<cwd>([^<]+)<\/cwd>/)
+    if (xmlCwd) {
+      const parts = xmlCwd[1].trim().replace(/\\/g, '/').split('/').filter(Boolean)
+      if (parts.length) return parts[parts.length - 1]
+    }
+
+    // Plain-text format: "current working directory: /path"
+    const plainCwd = text.match(/(?:current working directory|cwd)[:\s]+([^\n<]+)/i)
+    if (plainCwd) {
+      const parts = plainCwd[1].trim().replace(/\\/g, '/').split('/').filter(Boolean)
+      if (parts.length) return parts[parts.length - 1]
+    }
+
+    // Fallback: scan messages for file paths like /Users/…/Project or C:\…\Project
+    const messages = body.messages as Array<{ content?: unknown }> | undefined
+    if (Array.isArray(messages)) {
+      for (const msg of messages.slice(-5)) {
+        const blocks = Array.isArray(msg.content) ? msg.content : [msg.content]
+        for (const block of blocks) {
+          const t = typeof block === 'string' ? block : (block as Record<string, unknown>)?.text ?? ''
+          const m = (t as string).match(/(?:[A-Za-z]:[\\/]|\/(?:Users|home|workspace|projects|Documents)[\\/])([^\s<>"\\/:*?|]+)/i)
+          if (m) return m[1]
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  return 'unknown'
+}
 
 const ANTHROPIC_API = 'https://api.anthropic.com'
 const OPENAI_API = 'https://api.openai.com'
@@ -138,7 +191,9 @@ app.post('/v1/messages', async (c) => {
   // Inject expand tool
   injectExpandToolAnthropic(body)
 
-  stats.record(originalChars, estimateChars(compressedMsgs), savings)
+  const project = extractProjectName(body)
+  stats.recordWithProject(project, originalChars, estimateChars(compressedMsgs), savings)
+  recordRequest(project, savings.savedChars, savings.compressed, savings.byTool)
 
   const fwdHeaders = forwardHeaders(c.req.raw.headers)
 
@@ -220,7 +275,9 @@ app.post('/v1/chat/completions', async (c) => {
 
   if (!isLocal) injectExpandToolOpenAI(body)
 
-  stats.record(originalChars, estimateChars(compressedMsgs), savings)
+  const oaiProject = extractProjectName(body)
+  stats.recordWithProject(oaiProject, originalChars, estimateChars(compressedMsgs), savings)
+  recordRequest(oaiProject, savings.savedChars, savings.compressed, savings.byTool)
 
   const fwdHeaders = forwardHeaders(c.req.raw.headers)
 
@@ -286,7 +343,9 @@ app.post('/v1beta/models/*', async (c) => {
   )
   body.contents = compressedContents
 
-  stats.record(originalChars, estimateChars(compressedContents), savings)
+  const geminiProject = extractProjectName(body)
+  stats.recordWithProject(geminiProject, originalChars, estimateChars(compressedContents), savings)
+  recordRequest(geminiProject, savings.savedChars, savings.compressed, savings.byTool)
 
   const targetUrl = `${GOOGLE_API}/v1beta/models/${modelPath}`
   const fwdHeaders = forwardHeaders(c.req.raw.headers)
@@ -320,8 +379,22 @@ app.post('/v1beta/models/*', async (c) => {
 
 // ── Squeezr internal endpoints ────────────────────────────────────────────────
 
+function buildStatsPayload() {
+  return {
+    ...stats.summary(),
+    cache: getCache(config).stats(),
+    expand_store_size: expandStoreSize(),
+    session_cache_size: sessionCacheSize(),
+    dry_run: config.dryRun,
+    pattern_hits: detPatternHits,
+    version: VERSION,
+    port: config.port,
+    mode: runtimeOverrides.mode,
+  }
+}
+
 app.get('/squeezr/stats', (c) => {
-  return c.json({ ...stats.summary(), cache: getCache(config).stats(), expand_store_size: expandStoreSize(), session_cache_size: sessionCacheSize(), dry_run: config.dryRun, pattern_hits: detPatternHits, version: VERSION, port: config.port, mode: runtimeOverrides.mode })
+  return c.json(buildStatsPayload())
 })
 
 app.get('/squeezr/health', (c) => {
@@ -343,17 +416,35 @@ app.get('/squeezr/dashboard', (c) => {
 
 app.get('/squeezr/events', (c) => {
   return streamSSE(c, async (s) => {
-    // Send initial data immediately
-    const payload = { ...stats.summary(), cache: getCache(config).stats(), expand_store_size: expandStoreSize(), session_cache_size: sessionCacheSize(), dry_run: config.dryRun, pattern_hits: detPatternHits, version: VERSION, port: config.port, mode: runtimeOverrides.mode }
-    await s.writeSSE({ data: JSON.stringify(payload) })
+    await s.writeSSE({ data: JSON.stringify(buildStatsPayload()) })
     while (true) {
       await s.sleep(2000)
       try {
-        const d = { ...stats.summary(), cache: getCache(config).stats(), expand_store_size: expandStoreSize(), session_cache_size: sessionCacheSize(), dry_run: config.dryRun, pattern_hits: detPatternHits, version: VERSION, port: config.port, mode: runtimeOverrides.mode }
-        await s.writeSSE({ data: JSON.stringify(d) })
+        await s.writeSSE({ data: JSON.stringify(buildStatsPayload()) })
       } catch { break }
     }
   })
+})
+
+// ── History + Projects endpoints ──────────────────────────────────────────────
+
+app.get('/squeezr/history', (c) => {
+  return c.json({
+    sessions: getAllSessionsForHistory(),
+    current: getCurrentSession(),
+  })
+})
+
+app.get('/squeezr/projects', (c) => {
+  return c.json({ projects: getProjectAggregates() })
+})
+
+// ── Control endpoints ─────────────────────────────────────────────────────────
+
+app.post('/squeezr/control/stop', (c) => {
+  // Respond first, then exit gracefully after a tick
+  setTimeout(() => process.emit('SIGTERM' as any), 200)
+  return c.json({ ok: true, message: 'Squeezr proxy shutting down…' })
 })
 
 app.post('/squeezr/config', async (c) => {
