@@ -28,8 +28,8 @@ export function getCache(config: Config): CompressionCache {
   return _cache
 }
 
-function estimatePressure(messages: unknown[]): number {
-  const chars = JSON.stringify(messages).length
+function estimatePressure(messages: unknown[], extraChars = 0): number {
+  const chars = JSON.stringify(messages).length + extraChars
   return Math.min(chars / 800_000, 1.0)
 }
 
@@ -175,10 +175,11 @@ export async function compressAnthropicMessages(
   messages: AnthropicMessage[],
   apiKey: string,
   config: Config,
+  systemExtraChars = 0,
 ): Promise<[AnthropicMessage[], Savings]> {
   if (config.disabled) return [messages, emptySavings()]
 
-  const pressure = estimatePressure(messages)
+  const pressure = estimatePressure(messages, systemExtraChars)
   const threshold = config.thresholdForPressure(pressure)
   const { nameMap: toolIdMap, skipIds } = buildAnthropicToolIdMap(messages)
   const allResults = extractAnthropicToolResults(messages, toolIdMap)
@@ -254,10 +255,16 @@ export async function compressAnthropicMessages(
   // Differential: split session cache hits from uncached
   const sessionHits: Array<{ index: number; subIndex: number; tool: string; block: SessionBlock }> = []
   const toCompress: Array<{ index: number; subIndex: number; text: string; tool: string }> = []
+  const lastMsgIdx = messages.length - 1
   for (const c of toProcess) {
     const cached = getBlock(hashText(c.text))
-    if (cached) sessionHits.push({ index: c.index, subIndex: c.subIndex, tool: c.tool, block: cached })
-    else toCompress.push(c)
+    if (cached) {
+      sessionHits.push({ index: c.index, subIndex: c.subIndex, tool: c.tool, block: cached })
+    } else if (c.index === lastMsgIdx && !config.aiSkipTools.has(c.tool.toLowerCase())) {
+      // Only AI-compress genuinely new blocks (from the last user message).
+      // Historical uncached blocks skip AI compression → prevents burst on first activation.
+      toCompress.push(c)
+    }
   }
 
   const freshlyCompressed = toCompress.length > 0
@@ -395,10 +402,18 @@ export async function compressOpenAIMessages(
 
   const sessionHits: Array<{ index: number; tool: string; block: SessionBlock }> = []
   const toCompress: Array<{ index: number; text: string; tool: string }> = []
+  const lastOAIMsgIdx = messages.length - 1
+  const lastAssistantIdx = (messages as Array<{ role: string }>).reduce(
+    (best, m, i) => (m.role === 'assistant' ? i : best), -1)
+  const newStartIdx = lastAssistantIdx >= 0 ? lastAssistantIdx : lastOAIMsgIdx
   for (const c of toProcess) {
     const cached = getBlock(hashText(c.text))
-    if (cached) sessionHits.push({ index: c.index, tool: c.tool, block: cached })
-    else toCompress.push(c)
+    if (cached) {
+      sessionHits.push({ index: c.index, tool: c.tool, block: cached })
+    } else if (c.index > newStartIdx && !config.aiSkipTools.has(c.tool.toLowerCase())) {
+      // Only AI-compress new tool results (after last assistant turn) — prevents burst on first activation.
+      toCompress.push(c)
+    }
   }
 
   const compressFn: CompressFn = isLocal

@@ -2,6 +2,21 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.17.3] - 2026-04-06
+### Fixed
+- **Critical: AI compression burst on first activation** — On first use with existing long conversations, ALL historical tool results were sent as simultaneous Haiku API calls via `Promise.allSettled`, consuming the entire Anthropic token quota in minutes. Now only tool results from the **current user message** (genuinely new blocks) are AI-compressed. All historical uncached blocks receive deterministic-only compression (free, no API calls).
+- **Session cache and expand store persist to disk** — Both stores survive terminal restarts (`~/.squeezr/session_cache.json` and `~/.squeezr/expand_store.json`). On startup, previously compressed blocks are loaded from disk — reopening any terminal with a long conversation causes zero Haiku API calls. Caches flush every 60s and on SIGINT/SIGTERM.
+- **Read tool excluded from AI compression by default** — Code files are never AI-summarized (destroys quality). Only free deterministic preprocessing is applied. Configurable via `ai_skip_tools` in `squeezr.toml`.
+- **System prompt array format now compressed** — Claude Code sends `system` as an array (`[{type:'text', text:'...'}]`); the previous `typeof system === 'string'` guard was always `false`, silently skipping system prompt compression entirely.
+- **`estimatePressure` includes system prompt size** — Context pressure was computed from message chars only, ignoring the large system prompt. Adaptive thresholds now account for the full context correctly.
+
+## [1.17.2] - 2026-04-03
+### Added
+- **Cursor IDE subscription MITM proxy** — `squeezr cursor` starts an HTTP/2 MITM proxy on port 8082 that transparently intercepts Cursor's ConnectRPC traffic to `api2.cursor.sh`. Compresses conversation context using Cursor's own models (cursor-small) or deterministic preprocessing. Works with Cursor's subscription plan — no separate API key (BYOK) needed. Chat, Agent, and Composer modes are compressed; tab completions (cursor-small) are not interceptable. System proxy is configured/cleaned up automatically on start/stop.
+- **Cursor BYOK support via tunnel** — `squeezr tunnel` starts a Cloudflare Quick Tunnel exposing the proxy as a public HTTPS URL. Use this URL in Cursor → Settings → Models → Override OpenAI Base URL to route Cursor chat/agent through Squeezr. No account or install required (uses `cloudflared` or `npx cloudflared@latest` as fallback).
+- **Continue extension support** — VS Code and JetBrains Continue extension works directly with `apiBase: http://localhost:8080/v1`. No tunnel needed.
+- **CORS middleware** — Cursor's Electron renderer sends OPTIONS preflight before every POST. The proxy now responds with `204 + Access-Control-Allow-*` headers so Cursor can connect without CORS errors. Has no effect on CLI tools.
+
 ## [1.17.1] - 2026-04-03
 ### Fixed
 - **`HTTPS_PROXY` no longer set globally on macOS/Linux/WSL** — the same root cause as the Windows 502 bug in v1.17.0 was present in the Unix shell profile setup and the bash/zsh shell wrapper. `HTTPS_PROXY=http://localhost:8081` was being exported into `~/.zshrc`, `~/.bashrc`, and `~/.profile`, routing all HTTPS traffic (including Claude Code) through the MITM proxy and causing 502 errors on every request. Fixed in `setupUnix()`, `setupWSL()`, `installBashWrapper()`, and `configurePorts()`.

@@ -200,6 +200,7 @@ Usage:
   squeezr status           Check if proxy is running
   squeezr config           Print config file path and current settings
   squeezr ports            Change HTTP and MITM proxy ports
+  squeezr tunnel           Expose proxy via Cloudflare Tunnel for Cursor IDE
   squeezr update           Kill old processes, install latest from npm, restart
   squeezr uninstall        Remove Squeezr completely (env vars, CA, auto-start, logs)
   squeezr version          Print version
@@ -1150,6 +1151,109 @@ Done!
   installShellWrapper()
 }
 
+// ── squeezr tunnel ────────────────────────────────────────────────────────────
+// Exposes the local proxy via a Cloudflare Quick Tunnel (free, no account needed).
+// Cursor IDE requires a public HTTPS URL because its servers call the endpoint
+// from Cloudflare's infrastructure — localhost is unreachable from there.
+
+async function startTunnel() {
+  const port = getPort()
+
+  // Verify proxy is running first
+  const running = await new Promise(resolve => {
+    const req = http.get(`http://localhost:${port}/squeezr/health`, res => {
+      resolve(res.statusCode === 200)
+    })
+    req.on('error', () => resolve(false))
+    req.setTimeout(2000, () => { req.destroy(); resolve(false) })
+  })
+
+  if (!running) {
+    console.error(`Squeezr proxy is not running on port ${port}.`)
+    console.error(`Start it first: squeezr start`)
+    process.exit(1)
+  }
+
+  console.log(`Starting Cloudflare Quick Tunnel for http://localhost:${port}...`)
+  console.log(`(free, no account needed — powered by trycloudflare.com)\n`)
+
+  // Try cloudflared binary, fall back to npx
+  let tunnelCmd, tunnelArgs
+  try {
+    execSync('cloudflared --version', { stdio: 'pipe' })
+    tunnelCmd = 'cloudflared'
+    tunnelArgs = ['tunnel', '--url', `http://localhost:${port}`]
+  } catch {
+    tunnelCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx'
+    tunnelArgs = ['cloudflared@latest', 'tunnel', '--url', `http://localhost:${port}`]
+    console.log(`cloudflared not installed — using npx cloudflared (may take a moment to download)\n`)
+  }
+
+  let tunnelUrl = null
+  const child = spawn(tunnelCmd, tunnelArgs, { stdio: ['ignore', 'pipe', 'pipe'] })
+
+  const printInstructions = (url) => {
+    console.log(`\n  ╔══════════════════════════════════════════════════════════════════╗`)
+    console.log(`  ║  Tunnel active:  ${url.padEnd(49)}║`)
+    console.log(`  ╠══════════════════════════════════════════════════════════════════╣`)
+    console.log(`  ║  CURSOR SETUP                                                    ║`)
+    console.log(`  ║                                                                  ║`)
+    console.log(`  ║  1. Cursor → Settings → Models                                   ║`)
+    console.log(`  ║  2. Add your OpenAI or Anthropic API key                         ║`)
+    console.log(`  ║  3. Enable "Override OpenAI Base URL"                            ║`)
+    console.log(`  ║  4. Set URL to: ${(url + '/v1').padEnd(49)}║`)
+    console.log(`  ║  5. Disable all built-in Cursor models                           ║`)
+    console.log(`  ║  6. Add a custom model pointing to the same URL                  ║`)
+    console.log(`  ║                                                                  ║`)
+    console.log(`  ║  CONTINUE EXTENSION (VS Code / JetBrains)                        ║`)
+    console.log(`  ║  No tunnel needed — use http://localhost:${port} directly         ${' '.repeat(Math.max(0, 17 - String(port).length))}║`)
+    console.log(`  ║                                                                  ║`)
+    console.log(`  ║  Press Ctrl+C to stop the tunnel                                 ║`)
+    console.log(`  ╚══════════════════════════════════════════════════════════════════╝\n`)
+  }
+
+  const parseUrl = (line) => {
+    const m = line.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)
+    return m ? m[0] : null
+  }
+
+  child.stdout.on('data', (chunk) => {
+    const text = chunk.toString()
+    if (!tunnelUrl) {
+      const found = parseUrl(text)
+      if (found) { tunnelUrl = found; printInstructions(tunnelUrl) }
+    }
+    process.stdout.write(text)
+  })
+
+  child.stderr.on('data', (chunk) => {
+    const text = chunk.toString()
+    if (!tunnelUrl) {
+      const found = parseUrl(text)
+      if (found) { tunnelUrl = found; printInstructions(tunnelUrl) }
+    }
+    // Only show cloudflared logs if no URL yet (suppress verbose after)
+    if (!tunnelUrl) process.stderr.write(text)
+  })
+
+  child.on('error', (err) => {
+    if (err.code === 'ENOENT') {
+      console.error(`Could not start tunnel. Install cloudflared: https://developers.cloudflare.com/cloudflared/downloads`)
+    } else {
+      console.error(`Tunnel error: ${err.message}`)
+    }
+    process.exit(1)
+  })
+
+  child.on('exit', (code) => {
+    if (code !== 0) console.log(`\nTunnel stopped (exit ${code})`)
+    process.exit(0)
+  })
+
+  process.on('SIGINT', () => { child.kill(); process.exit(0) })
+  process.on('SIGTERM', () => { child.kill(); process.exit(0) })
+}
+
 // ── CLI router ────────────────────────────────────────────────────────────────
 
 switch (command) {
@@ -1262,6 +1366,11 @@ switch (command) {
   case 'ports':
     await configurePorts()
     break
+
+  case 'tunnel':
+    await startTunnel()
+    break
+
   case 'uninstall':
     await uninstall()
     break

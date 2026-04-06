@@ -1,4 +1,9 @@
 import { createHash } from 'crypto'
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+
+const SESSION_CACHE_PATH = join(homedir(), '.squeezr', 'session_cache.json')
 
 /**
  * Session-level cache for compressed blocks.
@@ -47,4 +52,24 @@ export function sessionCacheSize(): number {
 
 export function clearSessionCache(): void {
   cache.clear()
+}
+
+export function loadSessionCache(): void {
+  try {
+    if (existsSync(SESSION_CACHE_PATH)) {
+      const raw = JSON.parse(readFileSync(SESSION_CACHE_PATH, 'utf-8'))
+      for (const [k, v] of Object.entries(raw)) {
+        cache.set(k, v as SessionBlock)
+      }
+      if (cache.size > 0) console.log(`[squeezr] Loaded ${cache.size} session cache entries from disk`)
+    }
+  } catch { /* ignore */ }
+}
+
+export function persistSessionCache(): void {
+  try {
+    const dir = join(homedir(), '.squeezr')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    writeFileSync(SESSION_CACHE_PATH, JSON.stringify(Object.fromEntries(cache)))
+  } catch { /* ignore */ }
 }

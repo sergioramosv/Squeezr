@@ -1,4 +1,9 @@
 import { createHash } from 'crypto'
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+
+const EXPAND_STORE_PATH = join(homedir(), '.squeezr', 'expand_store.json')
 
 /**
  * Expand store — keeps original tool results so the model can retrieve
@@ -38,6 +43,26 @@ export function expandStoreSize(): number {
 
 export function clearExpandStore(): void {
   store.clear()
+}
+
+export function loadExpandStore(): void {
+  try {
+    if (existsSync(EXPAND_STORE_PATH)) {
+      const raw = JSON.parse(readFileSync(EXPAND_STORE_PATH, 'utf-8'))
+      for (const [k, v] of Object.entries(raw)) {
+        store.set(k, v as string)
+      }
+      if (store.size > 0) console.log(`[squeezr] Loaded ${store.size} expand store entries from disk`)
+    }
+  } catch { /* ignore */ }
+}
+
+export function persistExpandStore(): void {
+  try {
+    const dir = join(homedir(), '.squeezr')
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    writeFileSync(EXPAND_STORE_PATH, JSON.stringify(Object.fromEntries(store)))
+  } catch { /* ignore */ }
 }
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
