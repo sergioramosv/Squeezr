@@ -248,6 +248,7 @@ async function startDaemon() {
       console.log(`Squeezr is already running (v${pkg.version})`)
       console.log(`  HTTP proxy (Claude/Aider/Gemini): http://localhost:${port}`)
       console.log(`  MITM proxy (Codex):               http://localhost:${mitmPort}`)
+      console.log(`  Dashboard:                        http://localhost:${port}/squeezr/dashboard`)
       return
     }
     // Version mismatch — old process from before npm update. Kill and restart.
@@ -275,6 +276,7 @@ async function startDaemon() {
   console.log(`Squeezr started (pid ${child.pid})`)
   console.log(`  HTTP proxy (Claude/Aider/Gemini): http://localhost:${port}`)
   console.log(`  MITM proxy (Codex):               http://localhost:${mitmPort}`)
+  console.log(`  Dashboard:                        http://localhost:${port}/squeezr/dashboard`)
   console.log(`  Logs: ${logFile}`)
 
 }
@@ -294,6 +296,20 @@ function showLogs() {
   }
   console.log(`=== ${logFile} (last ${tail.length} lines) ===\n`)
   console.log(tail.join('\n'))
+}
+
+function killMcpProcesses() {
+  if (process.platform === 'win32') {
+    try {
+      execSync(
+        `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"name='node.exe'\\" | Where-Object { $_.CommandLine -like '*squeezr*mcp*' -or $_.CommandLine -like '*mcp.js*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"`,
+        { stdio: 'pipe' }
+      )
+    } catch {}
+  } else {
+    try { execSync(`pkill -f 'squeezr.*mcp' 2>/dev/null`, { stdio: 'pipe' }) } catch {}
+    try { execSync(`pkill -f 'mcp\\.js' 2>/dev/null`, { stdio: 'pipe' }) } catch {}
+  }
 }
 
 function stopProxy() {
@@ -332,6 +348,10 @@ function stopProxy() {
       }
     } catch {}
   }
+
+  // Also stop the MCP server process
+  killMcpProcesses()
+
   // Clear HTTPS_PROXY so npm and other tools don't try to use the dead proxy
   if (process.platform === 'win32') {
     try { execSync('setx HTTPS_PROXY ""', { stdio: 'pipe' }) } catch {}
@@ -344,8 +364,6 @@ function stopProxy() {
 
   if (killed) {
     console.log(`Squeezr stopped`)
-    console.log(`  HTTP proxy (Claude/Aider/Gemini): http://localhost:${port}`)
-    console.log(`  MITM proxy (Codex):               http://localhost:${mitmPort}`)
   } else {
     console.log(`Squeezr is not running`)
   }
@@ -364,6 +382,7 @@ async function checkStatus() {
           console.log(`Squeezr is running  (v${json.version})`)
           console.log(`  HTTP proxy (Claude/Aider/Gemini): http://localhost:${port}`)
           console.log(`  MITM proxy (Codex):               http://localhost:${mitmPort}`)
+          console.log(`  Dashboard:                        http://localhost:${port}/squeezr/dashboard`)
         } catch {
           console.log(`Squeezr is running on port ${port}`)
         }
@@ -444,11 +463,13 @@ async function mcpInstall() {
       const dir = path.dirname(target.file)
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
       fs.writeFileSync(target.file, JSON.stringify(cfg, null, 2))
+      installed++
       console.log()
       console.log('  ok ' + target.name + ': ' + target.file)
     } catch (e) {
       console.warn()
       console.warn('  warn ' + target.name + ': ' + (e.message || e))
+    }
   }
 
   console.log()
@@ -505,7 +526,8 @@ async function configurePorts() {
 
   console.log(`\nCurrent ports:`)
   console.log(`  HTTP proxy (Claude/Aider/Gemini): ${currentPort}`)
-  console.log(`  MITM proxy (Codex):               ${currentMitm}\n`)
+  console.log(`  MITM proxy (Codex):               ${currentMitm}`)
+  console.log(`  Dashboard:                        ${currentPort}/squeezr/dashboard  (same port as proxy)\n`)
 
   const newPort = await ask(`HTTP proxy port [${currentPort}]: `)
   const newMitm = await ask(`MITM proxy port [${currentMitm}]: `)
@@ -718,7 +740,11 @@ async function uninstall() {
     } catch {}
   }
 
-  // 8. npm uninstall -g (clear HTTPS_PROXY first so npm doesn't hit dead proxy)
+  // 8. Remove MCP registrations
+  console.log('  [..] Removing MCP registrations...')
+  try { await mcpUninstall() } catch {}
+
+  // 9. npm uninstall -g (clear HTTPS_PROXY first so npm doesn't hit dead proxy)
   console.log('  [..] Uninstalling npm package...')
   const cleanEnv = { ...process.env, HTTPS_PROXY: '', https_proxy: '', HTTP_PROXY: '', http_proxy: '' }
   try {
@@ -1367,30 +1393,42 @@ switch (command) {
   case 'update':
     await (async () => {
       console.log('Stopping Squeezr...')
-      stopProxy()
-      // Also kill anything on the ports by brute force
-      const uPort = getPort()
-      const uMitmPort = getMitmPort(uPort)
-      if (process.platform === 'win32') {
-        try { execSync(`for /f "tokens=5" %a in ('netstat -ano ^| findstr ":${uPort} " ^| findstr LISTENING') do taskkill /F /PID %a`, { stdio: 'pipe', shell: 'cmd.exe' }) } catch {}
-        try { execSync(`for /f "tokens=5" %a in ('netstat -ano ^| findstr ":${uMitmPort} " ^| findstr LISTENING') do taskkill /F /PID %a`, { stdio: 'pipe', shell: 'cmd.exe' }) } catch {}
-      } else {
-        try { execSync(`kill -9 $(lsof -ti:${uPort}) 2>/dev/null`, { stdio: 'pipe' }) } catch {}
-        try { execSync(`kill -9 $(lsof -ti:${uMitmPort}) 2>/dev/null`, { stdio: 'pipe' }) } catch {}
-      }
-      await new Promise(r => setTimeout(r, 1000))
+      stopProxy()  // also kills MCP via killMcpProcesses()
+      console.log('Releasing file locks...')
+      killMcpProcesses()  // double-kill in case stopProxy was too fast
+      await new Promise(r => setTimeout(r, 2000))
 
       console.log('Installing latest version...')
       const cleanEnv = { ...process.env, HTTPS_PROXY: '', https_proxy: '', HTTP_PROXY: '', http_proxy: '' }
-      try {
-        execSync('npm install -g squeezr-ai@latest', { stdio: 'inherit', env: cleanEnv })
-      } catch {
+      let installed = false
+      for (let attempt = 1; attempt <= 4; attempt++) {
         try {
-          execSync('sudo npm install -g squeezr-ai@latest', { stdio: 'inherit', env: cleanEnv })
-        } catch {
-          console.error('npm install failed. Try manually: HTTPS_PROXY= npm install -g squeezr-ai')
-          process.exit(1)
+          execSync('npm install -g squeezr-ai@latest', { stdio: 'inherit', env: cleanEnv })
+          installed = true
+          break
+        } catch (err) {
+          const msg = String(err?.stderr || err?.message || '')
+          if ((msg.includes('EBUSY') || msg.includes('EPERM')) && attempt < 4) {
+            console.log(`  Files still locked, retrying in 3s (attempt ${attempt}/4)...`)
+            // Try harder to release locks on retry
+            killMcpProcesses()
+            await new Promise(r => setTimeout(r, 3000))
+          } else if (!msg.includes('EBUSY') && !msg.includes('EPERM') && process.platform !== 'win32') {
+            // On Unix, try sudo as fallback (not useful on Windows)
+            try {
+              execSync('sudo npm install -g squeezr-ai@latest', { stdio: 'inherit', env: cleanEnv })
+              installed = true
+            } catch {}
+            break
+          } else {
+            break
+          }
         }
+      }
+      if (!installed) {
+        console.error('\nUpdate failed: files are still locked.')
+        console.error('Fix: close Claude Code completely (this releases the MCP server lock), then run "squeezr update" again.')
+        process.exit(1)
       }
 
       // Clear update check cache
@@ -1433,6 +1471,7 @@ switch (command) {
       console.log(`Squeezr started (pid ${child.pid})`)
       console.log(`  HTTP proxy (Claude/Aider/Gemini): http://localhost:${startPort}`)
       console.log(`  MITM proxy (Codex):               http://localhost:${startMitmPort}`)
+      console.log(`  Dashboard:                        http://localhost:${startPort}/squeezr/dashboard`)
       console.log(`  Logs: ${logFile}`)
 
       // Ensure PowerShell wrapper is installed (so env vars refresh automatically)

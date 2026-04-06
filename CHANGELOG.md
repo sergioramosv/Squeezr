@@ -2,6 +2,23 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.17.12] - 2026-04-06
+### Added
+- **Dashboard URL in banner** — `squeezr start`, `squeezr status`, and `squeezr update` now print `Dashboard: http://localhost:PORT/squeezr/dashboard` alongside the proxy URLs.
+- **Dashboard port in `squeezr ports`** — Shows dashboard URL (shares the proxy port) in the current-ports summary.
+### Fixed
+- **`squeezr stop` now kills MCP server** — New `killMcpProcesses()` helper kills the `squeezr-mcp` Node process (stdio MCP server) when stopping. Uses PowerShell `Get-CimInstance` (replaces deprecated `wmic`) on Windows, `pkill` on Unix.
+- **`squeezr update` uses same helper** — Replaced the broken `wmic` calls with `killMcpProcesses()`, which works on Windows 11 (wmic removed). Retry loop also uses it.
+- **`squeezr uninstall` removes MCP registrations** — Calls `mcpUninstall()` before removing the npm package, cleaning `.claude.json`, Cursor, Windsurf, and Cline MCP configs automatically.
+
+## [1.17.11] - 2026-04-06
+### Fixed
+- **SyntaxError on startup** — `mcpInstall()` was missing a closing `}` for the catch block (introduced in v1.17.6), causing `Unexpected end of input` on Node.js v24. All commands were broken on fresh installs. Also fixed `installed` counter not being incremented inside the try block.
+
+## [1.17.10] - 2026-04-06
+### Fixed
+- **`squeezr update` EBUSY on Windows** — The MCP server process (`squeezr-mcp`) launched by Claude Code kept `dist/mcp.js` and other dist files locked, preventing npm from renaming the module directory. Fix: `update` now kills squeezr-mcp via `wmic` before installing, waits 2 s (up from 1 s), and retries npm install up to 4 times (3 s apart) on `EBUSY`/`EPERM` errors, with a broader wmic sweep on each retry. Clear error message if all retries fail.
+
 ## [1.17.9] - 2026-04-06
 ### Added
 - **LIMITS dashboard page** — 5th sidebar page showing real-time rate limit gauges and token consumption per CLI.
