@@ -16,9 +16,19 @@ import { VERSION } from './version.js';
 import { recordRequest, getCurrentSession, getProjectAggregates, getAllSessionsForHistory, } from './history.js';
 import { updateAnthropicFromHeaders, updateOpenAIFromHeaders, updateGeminiFrom429, addAnthropicUsage, addOpenAIUsage, addGeminiUsage, makeSseUsageParser, maybeRefreshOpenAIBilling, storeKey, limitsSnapshot, } from './limits.js';
 // ── Project name extraction ────────────────────────────────────────────────────
+// Manual project override — set via /squeezr/project endpoint or MCP tool
+let manualProject = null;
+export function setManualProject(name) {
+    manualProject = name;
+}
+export function getManualProject() {
+    return manualProject;
+}
 // Reads the CWD from Claude Code's system prompt (injected as <cwd>…</cwd> or
 // "current working directory: …") and returns the last path component.
 function extractProjectName(body) {
+    if (manualProject)
+        return manualProject;
     try {
         const system = body.system;
         let text = '';
@@ -44,18 +54,18 @@ function extractProjectName(body) {
             if (parts.length)
                 return parts[parts.length - 1];
         }
-        // Fallback: scan messages for file paths like /Users/…/Project or C:\…\Project
-        const messages = body.messages;
-        if (Array.isArray(messages)) {
-            for (const msg of messages.slice(-5)) {
-                const blocks = Array.isArray(msg.content) ? msg.content : [msg.content];
-                for (const block of blocks) {
-                    const t = typeof block === 'string' ? block : block?.text ?? '';
-                    const m = t.match(/(?:[A-Za-z]:[\\/]|\/(?:Users|home|workspace|projects|Documents)[\\/])([^\s<>"\\/:*?|]+)/i);
-                    if (m)
-                        return m[1];
-                }
+        // Fallback: extract LAST meaningful path segment from system prompt
+        // e.g. C:\Users\Ramos\Documents\InvoiceApp\src → InvoiceApp
+        const pathMatch = text.match(/(?:[A-Za-z]:[\\/]|\/(?:Users|home|workspace|projects|Documents)[\\/])[^\s<>"*?|]+/i);
+        if (pathMatch) {
+            const parts = pathMatch[0].replace(/\\/g, '/').split('/').filter(Boolean);
+            const skip = new Set(['users', 'home', 'documents', 'workspace', 'projects', 'desktop', 'dev', 'src', 'repos']);
+            for (const pt of parts) {
+                if (!skip.has(pt.toLowerCase()) && !/^[a-z]:$/i.test(pt))
+                    return pt;
             }
+            if (parts.length)
+                return parts[parts.length - 1];
         }
     }
     catch { /* ignore */ }
@@ -137,15 +147,21 @@ app.post('/v1/messages', async (c) => {
         ?? c.req.header('authorization')?.replace(/^bearer\s+/i, '').trim()
         ?? process.env.ANTHROPIC_API_KEY
         ?? '';
+    // Extract project name BEFORE compressing system prompt (compression destroys <cwd> tags)
+    const project = extractProjectName(body);
     // System prompt compression (handles both string and array formats — Claude Code sends array)
     if (config.compressSystemPrompt && !config.dryRun) {
         if (typeof body.system === 'string') {
-            body.system = await compressSystemPrompt(body.system, apiKey, 'haiku');
+            const sp = await compressSystemPrompt(body.system, apiKey, 'haiku');
+            body.system = sp.text;
+            stats.recordSystemPromptSaved(sp.originalLen, sp.compressedLen);
         }
         else if (Array.isArray(body.system)) {
             for (const block of body.system) {
                 if (block.type === 'text' && typeof block.text === 'string') {
-                    block.text = await compressSystemPrompt(block.text, apiKey, 'haiku');
+                    const sp = await compressSystemPrompt(block.text, apiKey, 'haiku');
+                    block.text = sp.text;
+                    stats.recordSystemPromptSaved(sp.originalLen, sp.compressedLen);
                 }
             }
         }
@@ -161,7 +177,6 @@ app.post('/v1/messages', async (c) => {
     body.messages = compressedMsgs;
     // Inject expand tool
     injectExpandToolAnthropic(body);
-    const project = extractProjectName(body);
     stats.recordWithProject(project, originalChars, estimateChars(compressedMsgs), savings);
     recordRequest(project, savings.savedChars, savings.compressed, savings.byTool);
     storeKey('anthropic', apiKey);
@@ -229,12 +244,16 @@ app.post('/v1/chat/completions', async (c) => {
     const openAIKey = extractOpenAIKey(c.req.raw.headers);
     const isLocal = config.isLocalKey(openAIKey);
     const upstream = isLocal ? `${config.localUpstreamUrl.replace(/\/$/, '')}/v1/chat/completions` : `${OPENAI_API}/v1/chat/completions`;
+    // Extract project name BEFORE compressing system prompt
+    const oaiProject = extractProjectName(body);
     const messages = (body.messages ?? []);
     // Compress system message for non-local
     if (!isLocal && config.compressSystemPrompt && !config.dryRun) {
         const msgs = messages;
         if (msgs[0]?.role === 'system' && typeof msgs[0].content === 'string') {
-            msgs[0].content = await compressSystemPrompt(msgs[0].content, openAIKey, 'gpt-mini');
+            const sp = await compressSystemPrompt(msgs[0].content, openAIKey, 'gpt-mini');
+            msgs[0].content = sp.text;
+            stats.recordSystemPromptSaved(sp.originalLen, sp.compressedLen);
         }
     }
     const originalChars = estimateChars(messages);
@@ -242,7 +261,6 @@ app.post('/v1/chat/completions', async (c) => {
     body.messages = compressedMsgs;
     if (!isLocal)
         injectExpandToolOpenAI(body);
-    const oaiProject = extractProjectName(body);
     stats.recordWithProject(oaiProject, originalChars, estimateChars(compressedMsgs), savings);
     recordRequest(oaiProject, savings.savedChars, savings.compressed, savings.byTool);
     if (!isLocal)
@@ -254,8 +272,10 @@ app.post('/v1/chat/completions', async (c) => {
             body.stream_options = { ...(body.stream_options ?? {}), include_usage: true };
         }
         const upstreamResp = await proxyStream(upstream, body, fwdHeaders);
-        if (!isLocal)
+        if (!isLocal) {
             updateOpenAIFromHeaders(upstreamResp.headers);
+            maybeRefreshOpenAIBilling(openAIKey).catch(() => { });
+        }
         return stream(c, async (s) => {
             const reader = upstreamResp.body.getReader();
             const decoder = new TextDecoder();
@@ -330,13 +350,23 @@ app.post('/v1beta/models/*', async (c) => {
         return stream(c, async (s) => {
             const reader = upstreamResp.body.getReader();
             const decoder = new TextDecoder();
-            const sseParser = makeSseUsageParser('anthropic', (inp, out) => addGeminiUsage(inp, out)); // Gemini SSE same structure for usage counts
+            // Gemini streaming sends JSON array chunks with usageMetadata, not Anthropic-style SSE
+            let gemBuf = '';
             while (true) {
                 const { done, value } = await reader.read();
                 if (done)
                     break;
                 await s.write(value);
-                sseParser(decoder.decode(value, { stream: true }));
+                gemBuf += decoder.decode(value, { stream: true });
+                const metaMatch = gemBuf.match(/"usageMetadata"\s*:\s*\{[^}]+\}/);
+                if (metaMatch) {
+                    try {
+                        const meta = JSON.parse(`{${metaMatch[0]}}`);
+                        addGeminiUsage(meta.usageMetadata.promptTokenCount ?? 0, meta.usageMetadata.candidatesTokenCount ?? 0);
+                    }
+                    catch { /* ignore parse errors */ }
+                    gemBuf = '';
+                }
             }
         });
     }
@@ -384,6 +414,23 @@ app.get('/squeezr/stats', (c) => {
 });
 app.get('/squeezr/health', (c) => {
     return c.json({ status: 'ok', version: VERSION });
+});
+// ── Project management ─────────────────────────────────────────────────────
+app.get('/squeezr/project', (c) => {
+    return c.json({ project: getManualProject() ?? stats.currentProjectName() });
+});
+app.post('/squeezr/project', async (c) => {
+    const body = await c.req.json();
+    if (body.project === null || body.project === '') {
+        setManualProject(null);
+        return c.json({ project: stats.currentProjectName(), manual: false });
+    }
+    if (typeof body.project === 'string') {
+        setManualProject(body.project);
+        stats.setProject(body.project);
+        return c.json({ project: body.project, manual: true });
+    }
+    return c.json({ error: 'Invalid project name' }, 400);
 });
 app.get('/squeezr/expand/:id', (c) => {
     const id = c.req.param('id');

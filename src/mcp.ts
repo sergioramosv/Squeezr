@@ -89,6 +89,35 @@ function fmtUptime(s: number): string {
 
 const pkg = require('../package.json') as { version: string }
 
+// ── Auto-update check (runs in background, non-blocking) ─────────────────────
+
+let latestVersion: string | null = null
+let lastUpdateCheck = 0
+const UPDATE_CHECK_INTERVAL = 30 * 60_000 // 30 minutes
+
+async function checkForUpdate(): Promise<string | null> {
+  if (Date.now() - lastUpdateCheck < UPDATE_CHECK_INTERVAL && latestVersion !== null) {
+    return latestVersion !== pkg.version ? latestVersion : null
+  }
+  try {
+    const res = await fetch('https://registry.npmjs.org/squeezr-ai/latest', {
+      signal: AbortSignal.timeout(5000),
+    })
+    if (res.ok) {
+      const data = await res.json() as { version: string }
+      latestVersion = data.version
+      lastUpdateCheck = Date.now()
+      return latestVersion !== pkg.version ? latestVersion : null
+    }
+  } catch { /* ignore */ }
+  lastUpdateCheck = Date.now()
+  return null
+}
+
+function updateBanner(newVersion: string): string {
+  return `\n\n🆕 Squeezr v${newVersion} available (you have v${pkg.version}). Run: squeezr update`
+}
+
 const server = new Server(
   { name: 'squeezr', version: pkg.version },
   { capabilities: { tools: {} } },
@@ -177,6 +206,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         'After updating, restart the proxy with: squeezr start',
       inputSchema: { type: 'object', properties: {}, required: [] },
     },
+    {
+      name: 'squeezr_set_project',
+      description:
+        'Set or change the current project name for Squeezr tracking. ' +
+        'Useful when auto-detection shows the wrong name. ' +
+        'Pass project name to set, or null/empty to clear and use auto-detection. ' +
+        'The project name appears in the dashboard, history, and gain reports.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: {
+            type: 'string',
+            description: 'Project name to set, or empty string to clear and use auto-detection.',
+          },
+        },
+        required: ['project'],
+      },
+    },
   ],
 }))
 
@@ -184,6 +231,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params
+
+  // Check for updates in background (non-blocking, cached for 30 min)
+  const newVer = await checkForUpdate()
+  const appendUpdate = (result: { content: Array<{ type: string; text: string }>; isError?: boolean }) => {
+    if (newVer && result.content[0]?.type === 'text') {
+      result.content[0].text += updateBanner(newVer)
+    }
+    return result
+  }
 
   // ── squeezr_status ──────────────────────────────────────────────────────────
   if (name === 'squeezr_status') {
@@ -211,7 +267,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const mode = stats ? (stats.mode as string ?? 'normal') : 'normal'
     const dryRun = stats ? (stats.dry_run as boolean) : false
 
-    return {
+    return appendUpdate({
       content: [{
         type: 'text',
         text: [
@@ -222,7 +278,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           `   Dashboard: ${BASE_URL}/squeezr/dashboard`,
         ].join('\n'),
       }],
-    }
+    })
   }
 
   // ── squeezr_stats ───────────────────────────────────────────────────────────
@@ -254,7 +310,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       .slice(0, 8)
       .map(([tool, t]) => `   ${tool.padEnd(16)} ${fmtNum(t.saved_tokens).padStart(7)} tokens  ${t.avg_pct}% avg  ×${t.count}`)
 
-    return {
+    return appendUpdate({
       content: [{
         type: 'text',
         text: [
@@ -269,9 +325,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           `Uptime           : ${uptime}`,
           '',
           toolLines.length > 0 ? 'By tool:\n' + toolLines.join('\n') : 'No tool results compressed yet.',
+          '',
+          '── Savings Breakdown ──',
+          ,
+          ,
+          ,
+          ,
+          ,
         ].join('\n'),
       }],
-    }
+    })
   }
 
   // ── squeezr_set_mode ────────────────────────────────────────────────────────
@@ -542,6 +605,37 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         }],
         isError: true,
       }
+    }
+  }
+
+  // ── squeezr_set_project ───────────────────────────────────────────────────
+  if (name === 'squeezr_set_project') {
+    const parsed = z.object({ project: z.string() }).parse(args)
+    const projName = parsed.project.trim()
+
+    const result = await proxyPost('/squeezr/project', {
+      project: projName || null,
+    })
+
+    if (!result) {
+      return {
+        content: [{ type: 'text', text: '❌ Squeezr proxy is not running. Start with: squeezr start' }],
+        isError: false,
+      }
+    }
+
+    const isManual = (result as any).manual
+    const name_ = (result as any).project
+
+    return {
+      content: [{
+        type: 'text',
+        text: isManual
+          ? `✅ Project set to: ${name_}
+   All future requests will be tracked under this project.
+   Clear with: squeezr_set_project({ project: "" })`
+          : `✅ Project cleared. Auto-detection active (current: ${name_}).`,
+      }],
     }
   }
 

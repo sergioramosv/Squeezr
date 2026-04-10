@@ -13,8 +13,6 @@
  *               final usage chunk for OpenAI when stream_options.include_usage is set)
  */
 
-const CHARS_PER_TOKEN = 3.5
-
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 export interface RateLimitState {
@@ -185,7 +183,9 @@ export function addAnthropicUsage(input: number, output: number): void {
   anthropicUsage.outputSession  += output
   anthropicUsage.inputToday     += input
   anthropicUsage.outputToday    += output
-  if (input > 0 || output > 0) anthropicUsage.requestsSession++
+  // Only count as new request when input tokens arrive (message_start),
+  // not on output (message_delta) — avoids double-counting in streaming.
+  if (input > 0) anthropicUsage.requestsSession++
 }
 
 export function addOpenAIUsage(input: number, output: number): void {
@@ -194,7 +194,8 @@ export function addOpenAIUsage(input: number, output: number): void {
   openaiUsage.outputSession  += output
   openaiUsage.inputToday     += input
   openaiUsage.outputToday    += output
-  if (input > 0 || output > 0) openaiUsage.requestsSession++
+  // OpenAI sends usage in a single final chunk with both fields, so input > 0 is reliable
+  if (input > 0) openaiUsage.requestsSession++
 }
 
 export function addGeminiUsage(input: number, output: number): void {
@@ -265,17 +266,21 @@ export async function maybeRefreshOpenAIBilling(apiKey: string): Promise<void> {
       }),
     ])
 
+    let gotData = false
     if (subResp.status === 'fulfilled' && subResp.value.ok) {
       const sub = await subResp.value.json() as Record<string, unknown>
       openAIBilling.hardLimitUsd = (sub.hard_limit_usd as number) ?? 0
       openAIBilling.softLimitUsd = (sub.soft_limit_usd as number) ?? 0
+      gotData = true
     }
     if (creditResp.status === 'fulfilled' && creditResp.value.ok) {
       const cr = await creditResp.value.json() as Record<string, unknown>
       openAIBilling.creditBalanceUsd = (cr.total_available as number) ?? 0
+      gotData = true
     }
 
-    openAIBilling.lastFetched = Date.now()
+    // Only update lastFetched if at least one request succeeded, so we retry on failure
+    if (gotData) openAIBilling.lastFetched = Date.now()
   } catch { /* ignore network errors */ }
 }
 

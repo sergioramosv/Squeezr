@@ -20,32 +20,37 @@ export const MITM_PORT   = config.mitmPort
 // ── CA generation ─────────────────────────────────────────────────────────────
 
 function ensureCA() {
-  if (fs.existsSync(CA_KEY_PATH) && fs.existsSync(CA_CERT_PATH)) return
-  fs.mkdirSync(CA_DIR, { recursive: true, mode: 0o700 })
-  const keys = forge.pki.rsa.generateKeyPair(2048)
-  const cert = forge.pki.createCertificate()
-  cert.publicKey = keys.publicKey
-  cert.serialNumber = '01'
-  cert.validity.notBefore = new Date()
-  cert.validity.notAfter  = new Date()
-  cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 10)
-  const attrs = [{ name: 'commonName', value: 'Squeezr-MITM-CA' }]
-  cert.setSubject(attrs)
-  cert.setIssuer(attrs)
-  cert.setExtensions([
-    { name: 'basicConstraints', cA: true },
-    { name: 'keyUsage', keyCertSign: true, cRLSign: true },
-  ])
-  cert.sign(keys.privateKey, forge.md.sha256.create())
-  fs.writeFileSync(CA_KEY_PATH, forge.pki.privateKeyToPem(keys.privateKey), { mode: 0o600 })
-  fs.writeFileSync(CA_CERT_PATH, forge.pki.certificateToPem(cert), { mode: 0o644 })
-  const systemCAs = [
-    '/etc/ssl/certs/ca-certificates.crt',
-    '/etc/ssl/cert.pem',
-  ].find(p => fs.existsSync(p))
-  const bundle = forge.pki.certificateToPem(cert) + (systemCAs ? fs.readFileSync(systemCAs, 'utf-8') : '')
-  fs.writeFileSync(BUNDLE_PATH, bundle, { mode: 0o644 })
-  console.log(`[squeezr/mitm] CA generated → ${CA_CERT_PATH}`)
+  const certsExist = fs.existsSync(CA_KEY_PATH) && fs.existsSync(CA_CERT_PATH)
+
+  if (!certsExist) {
+    fs.mkdirSync(CA_DIR, { recursive: true, mode: 0o700 })
+    const keys = forge.pki.rsa.generateKeyPair(2048)
+    const cert = forge.pki.createCertificate()
+    cert.publicKey = keys.publicKey
+    cert.serialNumber = '01'
+    cert.validity.notBefore = new Date()
+    cert.validity.notAfter  = new Date()
+    cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 10)
+    const attrs = [{ name: 'commonName', value: 'Squeezr-MITM-CA' }]
+    cert.setSubject(attrs)
+    cert.setIssuer(attrs)
+    cert.setExtensions([
+      { name: 'basicConstraints', cA: true },
+      { name: 'keyUsage', keyCertSign: true, cRLSign: true },
+    ])
+    cert.sign(keys.privateKey, forge.md.sha256.create())
+    fs.writeFileSync(CA_KEY_PATH, forge.pki.privateKeyToPem(keys.privateKey), { mode: 0o600 })
+    fs.writeFileSync(CA_CERT_PATH, forge.pki.certificateToPem(cert), { mode: 0o644 })
+    console.log(`[squeezr/mitm] CA generated → ${CA_CERT_PATH}`)
+  }
+
+  // Always regenerate bundle.crt from the CA cert only.
+  // Avoid concatenating system CA bundles — they can contain certs that
+  // BoringSSL/Node.js rejects (e.g. on WSL), causing NODE_EXTRA_CA_CERTS to fail.
+  // Node.js already trusts its own built-in root CAs, so only the squeezr CA
+  // cert is needed here.
+  const caCertPem = fs.readFileSync(CA_CERT_PATH, 'utf-8')
+  fs.writeFileSync(BUNDLE_PATH, caCertPem, { mode: 0o644 })
 }
 
 // ── Per-host cert (cached) ────────────────────────────────────────────────────

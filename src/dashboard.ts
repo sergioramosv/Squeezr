@@ -349,6 +349,37 @@ tr:last-child td{border-bottom:none}
           <div class="cache-val" id="c-patterns">—</div>
         </div>
       </div>
+
+      <!-- Savings breakdown -->
+      <div class="section">
+        <div class="section-title">Savings Breakdown</div>
+        <div class="cache-grid" style="grid-template-columns:1fr 1fr 1fr">
+          <div class="cache-item">
+            <div class="cache-label">Deterministic</div>
+            <div class="cache-val" id="bd-det" style="color:var(--green)">—</div>
+          </div>
+          <div class="cache-item">
+            <div class="cache-label">AI compression</div>
+            <div class="cache-val" id="bd-ai" style="color:var(--blue)">—</div>
+          </div>
+          <div class="cache-item">
+            <div class="cache-label">Read dedup</div>
+            <div class="cache-val" id="bd-dedup" style="color:var(--purple)">—</div>
+          </div>
+          <div class="cache-item">
+            <div class="cache-label">System prompt</div>
+            <div class="cache-val" id="bd-sysprompt">—</div>
+          </div>
+          <div class="cache-item">
+            <div class="cache-label">Tag overhead</div>
+            <div class="cache-val" id="bd-overhead" style="color:var(--muted)">—</div>
+          </div>
+          <div class="cache-item">
+            <div class="cache-label">AI calls</div>
+            <div class="cache-val" id="bd-aicalls" style="color:var(--muted)">—</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ─── Projects ──────────────────────────────────────────────────────── -->
@@ -555,17 +586,17 @@ tr:last-child td{border-bottom:none}
             <circle cx="12" cy="12" r="10"/>
             <path d="M12 8v4l3 3"/>
           </svg>
-          <span class="limits-cli-name">Personal monthly budget</span>
+          <span class="limits-cli-name">Personal daily budget</span>
           <span class="limits-cli-badge none">optional</span>
         </div>
         <div class="limits-budget-row">
           <input class="limits-budget-input" id="budget-input" type="number" placeholder="e.g. 5000000" min="0">
-          <span class="limits-budget-label">tokens / month</span>
-          <button class="mode-btn" id="budget-save" style="padding:4px 12px;font-size:11px">Save</button>
+          <span class="limits-budget-label">tokens / day</span>
+          <button class="btn-save" id="budget-save" style="padding:4px 12px;font-size:11px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--muted);cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='var(--blue)';this.style.color='var(--text)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">Save</button>
         </div>
         <div id="budget-bar-wrap" style="margin-top:10px;display:none">
           <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:5px">
-            <span>Tokens used this month through Squeezr</span>
+            <span>Tokens used today through Squeezr</span>
             <span id="budget-pct-label">0%</span>
           </div>
           <div class="limits-gauge-bar" style="height:10px">
@@ -724,6 +755,15 @@ function fmtDur(startMs, endMs) {
   if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's'
   return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm'
 }
+function timeAgo(ms) {
+  if (!ms) return ''
+  const diff = Math.round((Date.now() - ms) / 1000)
+  if (diff < 60) return 'just now'
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago'
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago'
+  if (diff < 172800) return 'yesterday'
+  return Math.floor(diff / 86400) + 'd ago'
+}
 function barColor(p) {
   if (p >= 90) return 'var(--red)'
   if (p >= 75) return 'var(--yellow)'
@@ -828,6 +868,18 @@ function renderOverview(d) {
     critical: 'Critical — threshold 50 chars, everything compressed'
   }
   document.getElementById('mode-desc').textContent = modeMap[d.mode] || ''
+
+  // Savings breakdown
+  const bd = d.breakdown
+  if (bd) {
+    const fmtC = (n) => n > 0 ? '-' + fmtN(n) : '0'
+    document.getElementById('bd-det').textContent = fmtC(bd.deterministic)
+    document.getElementById('bd-ai').textContent = fmtC(bd.ai_compression)
+    document.getElementById('bd-dedup').textContent = fmtC(bd.read_dedup)
+    document.getElementById('bd-sysprompt').textContent = fmtC(bd.system_prompt)
+    document.getElementById('bd-overhead').textContent = bd.overhead > 0 ? '+' + fmtN(bd.overhead) : '0'
+    document.getElementById('bd-aicalls').textContent = bd.ai_calls > 0 ? bd.ai_calls + ' calls' : '0'
+  }
 }
 
 // ── Projects page ────────────────────────────────────────────────────────────
@@ -914,7 +966,8 @@ function renderHistSessions() {
     const idx = sessions.findIndex(s => s.id === histData.current.id)
     if (idx >= 0) sessions[idx] = histData.current; else sessions.push(histData.current)
   }
-  // Sort newest first
+  // Filter empty sessions and sort newest first
+  sessions = sessions.filter(s => s.requests > 0)
   sessions.sort((a, b) => b.startTime - a.startTime)
 
   if (selectedHistProj !== '__all__') {
@@ -950,6 +1003,7 @@ function renderHistSessions() {
         <div class="session-date">
           \${fmtTime(s.startTime)} → \${fmtTime(s.endTime)}
           <span style="color:var(--muted);font-weight:400"> (\${fmtDur(s.startTime, s.endTime)})</span>
+          <span style="color:var(--muted);font-weight:400;margin-left:6px">\${timeAgo(s.endTime)}</span>
           \${isCurrent ? '<span style="font-size:10px;color:var(--green);margin-left:8px">● active</span>' : ''}
           \${projBadge}
         </div>
@@ -1009,6 +1063,8 @@ function renderLimits(d) {
 
   // ── Anthropic ──
   const arl = anthropic?.rl
+  const au = anthropic?.usage
+  const antHasUsage = au && (au.inputSession > 0 || au.outputSession > 0)
   if (arl?.hasData) {
     document.getElementById('ant-badge').className = 'limits-cli-badge live'
     document.getElementById('ant-badge').textContent = 'live'
@@ -1016,8 +1072,20 @@ function renderLimits(d) {
     fillGauge('ant-req-fill','ant-req-pct','ant-req-rem','ant-req-reset', arl.requestsRemaining, arl.requestsLimit, arl.requestsResetEpoch)
     fillGauge('ant-inp-fill','ant-inp-pct','ant-inp-rem','ant-inp-reset', arl.inputTokensRemaining, arl.inputTokensLimit, arl.tokensResetEpoch)
     fillGauge('ant-out-fill','ant-out-pct','ant-out-rem','ant-out-reset', arl.outputTokensRemaining, arl.outputTokensLimit, arl.tokensResetEpoch)
+  } else if (antHasUsage) {
+    // Subscription/OAuth: no rate limit headers, but usage is tracked
+    document.getElementById('ant-badge').className = 'limits-cli-badge live'
+    document.getElementById('ant-badge').textContent = 'subscription'
+    // Show session totals in gauge areas since we don't have rate limits
+    document.getElementById('ant-tok-pct').textContent = fmtTokens(au.inputSession + au.outputSession)
+    document.getElementById('ant-tok-rem').textContent = 'session total'
+    document.getElementById('ant-req-pct').textContent = au.requestsSession + ' reqs'
+    document.getElementById('ant-req-rem').textContent = 'session total'
+    document.getElementById('ant-inp-pct').textContent = fmtTokens(au.inputSession)
+    document.getElementById('ant-inp-rem').textContent = 'session input'
+    document.getElementById('ant-out-pct').textContent = fmtTokens(au.outputSession)
+    document.getElementById('ant-out-rem').textContent = 'session output'
   }
-  const au = anthropic?.usage
   if (au) {
     document.getElementById('ant-u-inp-s').textContent = fmtTokens(au.inputSession)
     document.getElementById('ant-u-out-s').textContent = fmtTokens(au.outputSession)
@@ -1027,11 +1095,20 @@ function renderLimits(d) {
 
   // ── OpenAI ──
   const orl = openai?.rl
+  const ou = openai?.usage
+  const oaiHasUsage = ou && (ou.inputSession > 0 || ou.outputSession > 0)
   if (orl?.hasData) {
     document.getElementById('oai-badge').className = 'limits-cli-badge live'
     document.getElementById('oai-badge').textContent = 'live'
     fillGauge('oai-tok-fill','oai-tok-pct','oai-tok-rem','oai-tok-reset', orl.tokensRemaining, orl.tokensLimit, orl.tokensResetEpoch)
     fillGauge('oai-req-fill','oai-req-pct','oai-req-rem','oai-req-reset', orl.requestsRemaining, orl.requestsLimit, orl.requestsResetEpoch)
+  } else if (oaiHasUsage) {
+    document.getElementById('oai-badge').className = 'limits-cli-badge live'
+    document.getElementById('oai-badge').textContent = 'tracking'
+    document.getElementById('oai-tok-pct').textContent = fmtTokens(ou.inputSession + ou.outputSession)
+    document.getElementById('oai-tok-rem').textContent = 'session total'
+    document.getElementById('oai-req-pct').textContent = ou.requestsSession + ' reqs'
+    document.getElementById('oai-req-rem').textContent = 'session total'
   }
   const ob = openai?.billing
   if (ob?.hardLimitUsd > 0) {
@@ -1039,7 +1116,6 @@ function renderLimits(d) {
     document.getElementById('oai-credits').textContent = '$' + (ob.creditBalanceUsd || 0).toFixed(2)
     document.getElementById('oai-hard-lim').textContent = '$' + ob.hardLimitUsd.toFixed(2)
   }
-  const ou = openai?.usage
   if (ou) {
     document.getElementById('oai-u-inp-s').textContent = fmtTokens(ou.inputSession)
     document.getElementById('oai-u-out-s').textContent = fmtTokens(ou.outputSession)
@@ -1049,6 +1125,8 @@ function renderLimits(d) {
 
   // ── Gemini ──
   const ge = gemini?.errors
+  const gu = gemini?.usage
+  const gemHasUsage = gu && (gu.inputSession > 0 || gu.outputSession > 0)
   if (ge?.hasData) {
     document.getElementById('gem-nodata').style.display = 'none'
     document.getElementById('gem-data').style.display = 'block'
@@ -1056,8 +1134,12 @@ function renderLimits(d) {
     document.getElementById('gem-errors').textContent = ge.errorCount429 + ' rate-limit errors'
     document.getElementById('gem-badge').className = 'limits-cli-badge error'
     document.getElementById('gem-badge').textContent = ge.errorCount429 + ' 429 errors'
+  } else if (gemHasUsage) {
+    document.getElementById('gem-nodata').style.display = 'none'
+    document.getElementById('gem-data').style.display = 'block'
+    document.getElementById('gem-badge').className = 'limits-cli-badge live'
+    document.getElementById('gem-badge').textContent = 'tracking'
   }
-  const gu = gemini?.usage
   if (gu) {
     document.getElementById('gem-u-inp-s').textContent = fmtTokens(gu.inputSession)
     document.getElementById('gem-u-out-s').textContent = fmtTokens(gu.outputSession)
@@ -1095,10 +1177,10 @@ function startLimitsCountdown(limitsData) {
 }
 
 // ── Budget logic ─────────────────────────────────────────────────────────────
-let monthlyBudget = parseInt(localStorage.getItem('squeezr_budget') || '0')
+let dailyBudget = parseInt(localStorage.getItem('squeezr_budget') || '0')
 
 function updateBudgetBar(au, ou, gu) {
-  const budget = monthlyBudget
+  const budget = dailyBudget
   const budgetInput = document.getElementById('budget-input')
   if (budgetInput && !budgetInput.value) budgetInput.value = budget || ''
 
@@ -1116,16 +1198,20 @@ function updateBudgetBar(au, ou, gu) {
   document.getElementById('budget-pct-label').textContent = pct + '%'
   document.getElementById('budget-pct-label').style.color = gaugeColor(pct)
   document.getElementById('budget-used-label').textContent = fmtTokens(totalToday) + ' used today'
-  document.getElementById('budget-limit-label').textContent = 'of ' + fmtTokens(budget) + ' / month'
+  document.getElementById('budget-limit-label').textContent = 'of ' + fmtTokens(budget) + ' / day'
 }
 
 document.getElementById('budget-save').addEventListener('click', () => {
   const val = parseInt(document.getElementById('budget-input').value || '0')
-  monthlyBudget = val
+  dailyBudget = val
   localStorage.setItem('squeezr_budget', String(val))
   document.getElementById('budget-save').textContent = '✓ Saved'
   setTimeout(() => document.getElementById('budget-save').textContent = 'Save', 2000)
-  updateBudgetBar(null, null, null)
+  // Re-render budget bar with latest limits data
+  if (lastLimitsData) {
+    const u = lastLimitsData.usage
+    updateBudgetBar(u?.anthropic, u?.openai, u?.gemini)
+  }
 })
 
 // Restore budget from localStorage on load
@@ -1159,18 +1245,26 @@ document.querySelectorAll('.nav-item').forEach(item => {
 })
 
 // ── Mode selector ─────────────────────────────────────────────────────────────
-document.querySelectorAll('.mode-btn').forEach(btn => {
+document.querySelectorAll('.mode-btn[data-mode]').forEach(btn => {
   btn.addEventListener('click', async () => {
     const mode = btn.dataset.mode
+    if (!mode) return
+    const prevActive = document.querySelector('.mode-btn.active')
     document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'))
     btn.classList.add('active')
     try {
-      await fetch('/squeezr/config', {
+      const res = await fetch('/squeezr/config', {
         method: 'POST',
         headers: {'content-type':'application/json'},
         body: JSON.stringify({ mode })
       })
-    } catch(e) { console.error('mode update failed', e) }
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+    } catch(e) {
+      // Revert to previous mode on failure
+      btn.classList.remove('active')
+      if (prevActive) prevActive.classList.add('active')
+      console.error('mode update failed', e)
+    }
   })
 })
 

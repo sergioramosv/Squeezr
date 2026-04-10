@@ -37,12 +37,12 @@ export async function compressSystemPrompt(
   prompt: string,
   apiKey: string,
   backend: 'haiku' | 'gpt-mini' | 'gemini-flash' | 'ollama',
-): Promise<string> {
-  if (!prompt || prompt.length < MIN_LENGTH) return prompt
+): Promise<{ text: string; originalLen: number; compressedLen: number }> {
+  if (!prompt || prompt.length < MIN_LENGTH) return { text: prompt, originalLen: prompt.length, compressedLen: prompt.length }
 
   const cache = loadCache()
   const key = cacheKey(prompt)
-  if (cache[key]) return cache[key]
+  if (cache[key]) return { text: cache[key], originalLen: prompt.length, compressedLen: cache[key].length }
 
   try {
     let compressed: string
@@ -75,15 +75,15 @@ export async function compressSystemPrompt(
       const data = (await resp.json()) as { candidates: Array<{ content: { parts: Array<{ text: string }> } }> }
       compressed = data.candidates[0].content.parts[0].text
     } else {
-      return prompt // ollama: skip system prompt compression for now
+      return { text: prompt, originalLen: prompt.length, compressedLen: prompt.length } // ollama: skip
     }
 
     const ratio = Math.round((1 - compressed.length / prompt.length) * 100)
     console.log(`[squeezr/${backend}] System prompt compressed: -${ratio}% (${prompt.length.toLocaleString()} → ${compressed.length.toLocaleString()} chars) [cached]`)
     cache[key] = compressed
     saveCache(cache)
-    return compressed
+    return { text: compressed, originalLen: prompt.length, compressedLen: compressed.length }
   } catch {
-    return prompt
+    return { text: prompt, originalLen: prompt.length, compressedLen: prompt.length }
   }
 }

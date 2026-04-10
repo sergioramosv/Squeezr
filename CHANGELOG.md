@@ -2,6 +2,65 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.21.0] - 2026-04-10
+### Added
+- **MCP auto-update notification** — Every MCP tool response now checks npm for newer versions (cached 30 min). When an update is available, appends `🆕 Squeezr vX.Y.Z available. Run: squeezr update` to the tool output so the user sees it naturally in the chat.
+
+## [1.20.1] - 2026-04-10
+### Fixed
+- **Limits page gauges empty with subscription** — With Claude Code subscription (OAuth), the token/input/output gauges showed "—" even though usage data existed. Now displays session totals (total tokens, input, output, requests) in the gauge areas when rate limit headers are unavailable. Same fix for OpenAI.
+
+## [1.20.0] - 2026-04-10
+### Added
+- **`squeezr gain --session`** — Live session savings fetched from the running proxy. Shows project name, uptime, breakdown, and by-tool stats.
+- **`squeezr gain --details`** — All-time stats with by-tool breakdown.
+- **AI compression cost deducted from NET** — When AI compression is active, the estimated token cost of Haiku/GPT-mini calls is now subtracted from NET saved, giving a true net figure.
+- **MCP tool `squeezr_set_project`** — Manually set or clear the current project name. Useful when auto-detection shows the wrong name. Set persists until cleared or proxy restarts.
+- **`/squeezr/project` REST endpoint** — GET returns current project, POST sets/clears manual override.
+- **MCP `squeezr_stats` now includes savings breakdown** — Shows deterministic, AI compression, read dedup, system prompt, and tag overhead in the stats output.
+
+### Fixed
+- **Project detection extracted garbage from system prompt** — The fallback regex captured the first path segment after `/Users/` (e.g. "Ramos") instead of the actual project name. Now extracts the LAST meaningful segment, skipping common parent dirs (Users, Documents, home, etc.). For `C:\Users\Ramos\Documents\InvoiceApp` → now correctly returns "InvoiceApp".
+
+### Improved
+- **`squeezr gain` aligned box** — Fixed broken alignment where `│` borders didn't close correctly. All rows now use a fixed-width renderer that guarantees exact alignment.
+- **`squeezr gain` shows chars + tokens** — Every savings line now shows both chars and approximate tokens side by side.
+- **Hidden zero lines** — Lines with 0 savings (e.g. AI compression when not active) are hidden instead of showing "-0 chars".
+
+## [1.19.0] - 2026-04-10
+### Added
+- **Honest `squeezr gain` with full savings breakdown** — Complete rewrite of the gain report. Now shows each savings source separately: deterministic preprocessing, AI compression, read-dedup, system prompt compression, tag overhead, and estimated AI compression cost. Displays NET savings instead of inflated totals. Warns when AI compression cost exceeds savings.
+- **Dashboard: Savings Breakdown section** — New Overview panel showing real-time breakdown of savings by source (deterministic, AI, dedup, system prompt, overhead, AI calls).
+- **Dashboard: Relative timestamps in History** — Session cards now show "2h ago", "yesterday", etc. alongside the time range.
+
+### Fixed
+- **Limits page showed all dashes with Claude Code subscription** — Claude Code with Max/Pro subscription uses OAuth (not API key), and Anthropic does not send `anthropic-ratelimit-*` headers for subscription users. The Limits page required these headers to show ANY data. Now shows usage counters (session/today input/output tokens) regardless of rate limit headers, with a "subscription" badge instead of "live". Same fix applied to OpenAI and Gemini.
+
+### Improved
+- **Dashboard: History filters empty sessions** — Sessions with 0 requests are no longer shown.
+- **Dashboard: Budget bar updates on Save** — Clicking Save now re-renders the budget bar with current usage data instead of resetting to 0.
+- **Dashboard: Mode change reverts on failure** — If the POST to `/squeezr/config` fails, the UI reverts to the previous active mode button instead of staying in a broken state.
+
+### Fixed
+- **Triangular accumulation bug in `stats.ts`** — `persist()` was writing cumulative session totals on each request instead of deltas, causing exponential inflation of saved chars. Now writes only the delta from each request.
+- **Deterministic savings not counted** — `preprocessForTool()` savings (strip ANSI, collapse whitespace, git/test patterns) were logged but never included in `Savings`. Now tracked and reported.
+- **Read-dedup savings not counted** — Duplicate file reads were collapsed but chars saved were not included in metrics. Now tracked and reported.
+- **Tag overhead not subtracted from savings** — `buildAndCache()` calculated `savedChars = original - result` without accounting for the `[squeezr:XXXX -NN%]` tag added to each compressed block (~35 chars). Now uses `original - fullString` for accurate NET savings.
+- **System prompt compression not tracked** — `compressSystemPrompt()` now returns original/compressed lengths; savings are tracked separately in stats.
+- **Project detection was always 'unknown'** — `extractProjectName()` ran AFTER system prompt compression, which destroyed the `<cwd>` tags. Moved extraction before compression for both Anthropic and OpenAI handlers. Projects page now correctly detects and tracks per-project stats.
+- **Gemini streaming token tracking broken** — SSE parser incorrectly used Anthropic event format (`message_start`/`message_delta`) for Gemini streams. Replaced with a JSON chunk parser that extracts `usageMetadata` from Gemini's actual streaming format.
+- **OpenAI billing never populated in streaming mode** — `maybeRefreshOpenAIBilling()` was only called in the non-streaming path. Since Codex uses streaming exclusively, the Limits page never showed OpenAI credits/limits. Now called in both paths.
+- **Streaming request count inflated 2x for Anthropic** — `addAnthropicUsage` incremented `requestsSession` on both `message_start` (input) and `message_delta` (output) SSE events. Now only counts on input tokens (one per request).
+- **OpenAI billing `lastFetched` updated on failure** — If both billing API calls failed, the 5-minute cooldown still applied, preventing retries. Now only updates `lastFetched` when at least one request succeeds.
+- **Budget tracker label mismatch** — Dashboard showed "tokens/month" but used daily counters that reset at midnight. Labels corrected to "tokens/day".
+- **Budget save button triggered mode change** — The `#budget-save` button shared the `.mode-btn` class, causing mode buttons to deactivate visually when saving budget. Separated into its own class.
+- **Dead code removed** — Unused `CHARS_PER_TOKEN` constant in `limits.ts`.
+
+## [1.17.13] - 2026-04-10
+### Fixed
+- **SSL cert load failure on second terminal** — `ensureCA()` now always regenerates `bundle.crt` on startup instead of only on first run. Fixes the `warn: ignoring extra certs … load failed: error:10000002:SSL routines:OPENSSL_internal:system library` warning that appeared when opening a new Claude terminal.
+- **System CA bundle removed from `bundle.crt`** — The bundle previously concatenated the system CA store (`/etc/ssl/certs/ca-certificates.crt`) which could contain certs that BoringSSL/Node.js rejects (notably in WSL). `bundle.crt` now contains only the Squeezr self-signed CA cert; Node.js trusts its own root CAs independently.
+
 ## [1.17.12] - 2026-04-06
 ### Added
 - **Dashboard URL in banner** — `squeezr start`, `squeezr status`, and `squeezr update` now print `Dashboard: http://localhost:PORT/squeezr/dashboard` alongside the proxy URLs.

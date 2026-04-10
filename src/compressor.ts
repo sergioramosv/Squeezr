@@ -14,6 +14,11 @@ export interface Savings {
   byTool: Array<{ tool: string; savedChars: number; originalChars: number }>
   dryRun: boolean
   sessionCacheHits: number
+  // Honest breakdown for accurate gain reporting
+  detSavedChars?: number     // deterministic preprocessing savings
+  dedupSavedChars?: number   // read-dedup savings
+  aiSavedChars?: number      // AI compression savings (net, after tag overhead)
+  overheadChars?: number     // chars added by [squeezr:XXXX] tags
 }
 
 const COMPRESS_PROMPT =
@@ -117,13 +122,15 @@ async function runCompression(
 
 // ── Session cache helper ──────────────────────────────────────────────────────
 
-function buildAndCache(original: string, result: string): { fullString: string; savedChars: number } {
+function buildAndCache(original: string, result: string): { fullString: string; savedChars: number; overheadChars: number } {
   const ratio = Math.round((1 - result.length / Math.max(original.length, 1)) * 100)
   const id = storeOriginal(original)
   const fullString = `[squeezr:${id} -${ratio}%] ${result}`
-  const savedChars = original.length - result.length
+  const overheadChars = fullString.length - result.length  // tag overhead
+  // Real savings: original minus what's actually sent (fullString, including tag)
+  const savedChars = original.length - fullString.length
   setBlock(hashText(original), { fullString, savedChars, originalChars: original.length })
-  return { fullString, savedChars }
+  return { fullString, savedChars, overheadChars }
 }
 
 // ── Anthropic format ──────────────────────────────────────────────────────────
@@ -196,10 +203,10 @@ export async function compressAnthropicMessages(
   // keep the most recent occurrence at full fidelity and replace earlier ones
   // with a short reference (saves tokens, model still has access via expand).
   const dedupedSet = new Set<string>()  // "index:subIndex" keys — skip in later steps
+  let readDedupSaved = 0
   {
     const readHashToId = new Map<string, string>()  // hash → expand id of most recent
     const seenMostRecent = new Set<string>()
-    let readDedupSaved = 0
     let readDedupCount = 0
     // Scan newest → oldest: first encounter of each hash = most recent
     for (let i = allResults.length - 1; i >= 0; i--) {
@@ -245,12 +252,12 @@ export async function compressAnthropicMessages(
   const candidates = allResults.slice(0, Math.max(0, allResults.length - effectiveKeepRecent(config)))
   const toProcess = candidates.filter(c => c.text.length >= threshold && !dedupedSet.has(`${c.index}:${c.subIndex}`))
 
-  if (toProcess.length === 0) return [msgs, emptySavings()]
+  if (toProcess.length === 0) return [msgs, emptySavings(false, detSaved, readDedupSaved)]
 
   if (config.dryRun) {
     const potential = toProcess.reduce((sum, c) => sum + c.text.length, 0)
     console.log(`[squeezr dry-run] Would AI-compress ${toProcess.length} block(s) | potential -${potential.toLocaleString()} chars | pressure=${Math.round(pressure * 100)}%`)
-    return [msgs, emptySavings(true)]
+    return [msgs, emptySavings(true, detSaved, readDedupSaved)]
   }
 
   // Differential: split session cache hits from uncached
@@ -274,20 +281,25 @@ export async function compressAnthropicMessages(
 
   let totalOriginal = 0
   let totalCompressed = 0
+  let totalOverhead = 0
+  let totalAiSaved = 0
   const byTool: Savings['byTool'] = []
 
   for (const { index, subIndex, tool, block } of sessionHits) {
     ;(msgs[index].content as Array<{ content?: unknown }>)[subIndex].content = block.fullString
     totalOriginal += block.originalChars
     totalCompressed += block.originalChars - block.savedChars
+    totalAiSaved += block.savedChars
     byTool.push({ tool, savedChars: block.savedChars, originalChars: block.originalChars })
   }
 
   for (const { index, subIndex, original, result, tool } of freshlyCompressed) {
-    const { fullString, savedChars } = buildAndCache(original, result)
+    const { fullString, savedChars, overheadChars } = buildAndCache(original, result)
     ;(msgs[index].content as Array<{ content?: unknown }>)[subIndex!].content = fullString
     totalOriginal += original.length
     totalCompressed += original.length - savedChars
+    totalOverhead += overheadChars
+    totalAiSaved += savedChars
     byTool.push({ tool, savedChars, originalChars: original.length })
   }
 
@@ -301,6 +313,10 @@ export async function compressAnthropicMessages(
     byTool,
     dryRun: false,
     sessionCacheHits: sessionHits.length,
+    detSavedChars: detSaved,
+    dedupSavedChars: readDedupSaved,
+    aiSavedChars: totalAiSaved,
+    overheadChars: totalOverhead,
   }]
 }
 
@@ -353,10 +369,11 @@ export async function compressOpenAIMessages(
 
   // Step 0: Cross-turn Read dedup
   const dedupedIndices = new Set<number>()
+  let readDedupSaved = 0
   {
     const readHashToId = new Map<string, string>()
     const seenMostRecent = new Set<string>()
-    let readDedupSaved = 0, readDedupCount = 0
+    let readDedupCount = 0
     for (let i = allResults.length - 1; i >= 0; i--) {
       const { index, text, tool } = allResults[i]
       if (tool.toLowerCase() !== 'read') continue
@@ -393,12 +410,12 @@ export async function compressOpenAIMessages(
   const candidates = allResults.slice(0, Math.max(0, allResults.length - effectiveKeepRecent(config)))
   const toProcess = candidates.filter(c => c.text.length >= threshold && !dedupedIndices.has(c.index))
 
-  if (toProcess.length === 0) return [msgs, emptySavings()]
+  if (toProcess.length === 0) return [msgs, emptySavings(false, detSaved, readDedupSaved)]
 
   if (config.dryRun) {
     const tag = isLocal ? 'ollama' : 'codex'
     console.log(`[squeezr dry-run/${tag}] Would AI-compress ${toProcess.length} block(s) | potential -${toProcess.reduce((s, c) => s + c.text.length, 0).toLocaleString()} chars`)
-    return [msgs, emptySavings(true)]
+    return [msgs, emptySavings(true, detSaved, readDedupSaved)]
   }
 
   const sessionHits: Array<{ index: number; tool: string; block: SessionBlock }> = []
@@ -412,7 +429,6 @@ export async function compressOpenAIMessages(
     if (cached) {
       sessionHits.push({ index: c.index, tool: c.tool, block: cached })
     } else if (aiEnabled() && c.index > newStartIdx && !config.aiSkipTools.has(c.tool.toLowerCase())) {
-      // Only AI-compress new tool results (after last assistant turn) — prevents burst on first activation.
       toCompress.push(c)
     }
   }
@@ -425,21 +441,24 @@ export async function compressOpenAIMessages(
     ? await runCompression(toCompress, compressFn, config)
     : []
 
-  let totalOriginal = 0, totalCompressed = 0
+  let totalOriginal = 0, totalCompressed = 0, totalOverhead = 0, totalAiSaved = 0
   const byTool: Savings['byTool'] = []
 
   for (const { index, tool, block } of sessionHits) {
     msgs[index].content = block.fullString
     totalOriginal += block.originalChars
     totalCompressed += block.originalChars - block.savedChars
+    totalAiSaved += block.savedChars
     byTool.push({ tool, savedChars: block.savedChars, originalChars: block.originalChars })
   }
 
   for (const { index, original, result, tool } of freshlyCompressed) {
-    const { fullString, savedChars } = buildAndCache(original, result)
+    const { fullString, savedChars, overheadChars } = buildAndCache(original, result)
     msgs[index].content = fullString
     totalOriginal += original.length
     totalCompressed += original.length - savedChars
+    totalOverhead += overheadChars
+    totalAiSaved += savedChars
     byTool.push({ tool, savedChars, originalChars: original.length })
   }
 
@@ -449,7 +468,7 @@ export async function compressOpenAIMessages(
   }
   if (sessionHits.length > 0) console.log(`[squeezr] Session cache: ${sessionHits.length} block(s) reused`)
 
-  return [msgs, { compressed: freshlyCompressed.length, savedChars: totalOriginal - totalCompressed, originalChars: totalOriginal, byTool, dryRun: false, sessionCacheHits: sessionHits.length }]
+  return [msgs, { compressed: freshlyCompressed.length, savedChars: totalOriginal - totalCompressed, originalChars: totalOriginal, byTool, dryRun: false, sessionCacheHits: sessionHits.length, detSavedChars: detSaved, dedupSavedChars: readDedupSaved, aiSavedChars: totalAiSaved, overheadChars: totalOverhead }]
 }
 
 // ── Gemini format ─────────────────────────────────────────────────────────────
@@ -490,10 +509,11 @@ export async function compressGeminiContents(
 
   // Step 0: Cross-turn Read dedup
   const geminiDedupedSet = new Set<string>()
+  let geminiReadDedupSaved = 0
   {
     const readHashToId = new Map<string, string>()
     const seenMostRecent = new Set<string>()
-    let readDedupSaved = 0, readDedupCount = 0
+    let readDedupCount = 0
     for (let i = allResults.length - 1; i >= 0; i--) {
       const { index, subIndex, text, tool } = allResults[i]
       if (tool.toLowerCase() !== 'read') continue
@@ -502,11 +522,11 @@ export async function compressGeminiContents(
         seenMostRecent.add(hash); readHashToId.set(hash, storeOriginal(text))
       } else {
         cts[index].parts[subIndex].functionResponse!.response = { output: `[same file content as a later read — squeezr_expand(${readHashToId.get(hash)}) to retrieve]` }
-        geminiDedupedSet.add(`${index}:${subIndex}`); readDedupCount++; readDedupSaved += text.length
+        geminiDedupedSet.add(`${index}:${subIndex}`); readDedupCount++; geminiReadDedupSaved += text.length
       }
     }
-    if (readDedupSaved > 0) {
-      console.log(`[squeezr/read-dedup/gemini] ${readDedupCount} duplicate file read(s) collapsed: -${readDedupSaved.toLocaleString()} chars`)
+    if (geminiReadDedupSaved > 0) {
+      console.log(`[squeezr/read-dedup/gemini] ${readDedupCount} duplicate file read(s) collapsed: -${geminiReadDedupSaved.toLocaleString()} chars`)
       hitPattern('readDedup', readDedupCount)
     }
   }
@@ -527,11 +547,11 @@ export async function compressGeminiContents(
   const candidates = allResults.slice(0, Math.max(0, allResults.length - effectiveKeepRecent(config)))
     .filter(c => c.text.length >= threshold && !geminiDedupedSet.has(`${c.index}:${c.subIndex}`))
 
-  if (candidates.length === 0) return [cts, emptySavings()]
+  if (candidates.length === 0) return [cts, emptySavings(false, detSaved, geminiReadDedupSaved)]
 
   if (config.dryRun) {
     console.log(`[squeezr dry-run/gemini] Would AI-compress ${candidates.length} block(s) | potential -${candidates.reduce((s, c) => s + c.text.length, 0).toLocaleString()} chars`)
-    return [cts, emptySavings(true)]
+    return [cts, emptySavings(true, detSaved, geminiReadDedupSaved)]
   }
 
   const sessionHits: Array<{ index: number; subIndex: number; tool: string; block: SessionBlock }> = []
@@ -546,29 +566,32 @@ export async function compressGeminiContents(
     ? await runCompression(toCompress, t => compressWithGeminiFlash(t, apiKey), config)
     : []
 
-  let totalOriginal = 0, totalCompressed = 0
+  let totalOriginal = 0, totalCompressed = 0, totalOverhead = 0, totalAiSaved = 0
   const byTool: Savings['byTool'] = []
 
   for (const { index, subIndex, tool, block } of sessionHits) {
     cts[index].parts[subIndex].functionResponse!.response = { output: block.fullString }
     totalOriginal += block.originalChars
     totalCompressed += block.originalChars - block.savedChars
+    totalAiSaved += block.savedChars
     byTool.push({ tool, savedChars: block.savedChars, originalChars: block.originalChars })
   }
 
   for (const { index, subIndex, original, result, tool } of freshlyCompressed) {
-    const { fullString, savedChars } = buildAndCache(original, result)
+    const { fullString, savedChars, overheadChars } = buildAndCache(original, result)
     cts[index].parts[subIndex!].functionResponse!.response = { output: fullString }
     totalOriginal += original.length
     totalCompressed += original.length - savedChars
+    totalOverhead += overheadChars
+    totalAiSaved += savedChars
     byTool.push({ tool, savedChars, originalChars: original.length })
   }
 
   if (sessionHits.length > 0) console.log(`[squeezr/gemini] Session cache: ${sessionHits.length} block(s) reused`)
 
-  return [cts, { compressed: freshlyCompressed.length, savedChars: totalOriginal - totalCompressed, originalChars: totalOriginal, byTool, dryRun: false, sessionCacheHits: sessionHits.length }]
+  return [cts, { compressed: freshlyCompressed.length, savedChars: totalOriginal - totalCompressed, originalChars: totalOriginal, byTool, dryRun: false, sessionCacheHits: sessionHits.length, detSavedChars: detSaved, dedupSavedChars: geminiReadDedupSaved, aiSavedChars: totalAiSaved, overheadChars: totalOverhead }]
 }
 
-function emptySavings(dryRun = false): Savings {
-  return { compressed: 0, savedChars: 0, originalChars: 0, byTool: [], dryRun, sessionCacheHits: 0 }
+function emptySavings(dryRun = false, detSavedChars = 0, dedupSavedChars = 0): Savings {
+  return { compressed: 0, savedChars: 0, originalChars: 0, byTool: [], dryRun, sessionCacheHits: 0, detSavedChars, dedupSavedChars, aiSavedChars: 0, overheadChars: 0 }
 }

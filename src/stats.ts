@@ -23,6 +23,14 @@ export class Stats {
   private lastOriginalChars = 0
   private lastCompressedChars = 0
 
+  // Breakdown counters for honest reporting
+  private totalDetSaved = 0
+  private totalDedupSaved = 0
+  private totalAiSaved = 0
+  private totalOverheadChars = 0
+  private totalSyspromptSaved = 0
+  private totalAiCompressionCalls = 0
+
   record(originalChars: number, compressedChars: number, savings: Savings): void {
     this.requests++
     this.totalOriginalChars += originalChars
@@ -31,6 +39,13 @@ export class Stats {
     this.totalSessionCacheHits += savings.sessionCacheHits
     this.lastOriginalChars = originalChars
     this.lastCompressedChars = compressedChars
+
+    // Accumulate breakdown
+    this.totalDetSaved += savings.detSavedChars ?? 0
+    this.totalDedupSaved += savings.dedupSavedChars ?? 0
+    this.totalAiSaved += savings.aiSavedChars ?? 0
+    this.totalOverheadChars += savings.overheadChars ?? 0
+    this.totalAiCompressionCalls += savings.compressed
 
     for (const entry of savings.byTool) {
       if (!this.byTool[entry.tool]) this.byTool[entry.tool] = { count: 0, savedChars: 0, originalChars: 0 }
@@ -45,7 +60,13 @@ export class Stats {
       console.log(`[squeezr] ${savings.compressed} block(s) compressed | -${savings.savedChars.toLocaleString()} chars (~${tokens.toLocaleString()} tokens) (${pct}% saved)`)
     }
 
-    this.persist()
+    this.persist(originalChars, compressedChars, savings)
+  }
+
+  recordSystemPromptSaved(originalLen: number, compressedLen: number): void {
+    if (compressedLen < originalLen) {
+      this.totalSyspromptSaved += originalLen - compressedLen
+    }
   }
 
   /** Call instead of record() when a project name is known. */
@@ -95,19 +116,47 @@ export class Stats {
       current_project: this.currentProject,
       last_original_chars: this.lastOriginalChars,
       last_compressed_chars: this.lastCompressedChars,
+      // Savings breakdown for honest dashboard reporting
+      breakdown: {
+        deterministic: this.totalDetSaved,
+        ai_compression: this.totalAiSaved,
+        read_dedup: this.totalDedupSaved,
+        system_prompt: this.totalSyspromptSaved,
+        overhead: this.totalOverheadChars,
+        ai_calls: this.totalAiCompressionCalls,
+      },
     }
   }
 
-  private persist(): void {
+  /**
+   * Persist ONLY the delta from this request — not cumulative session totals.
+   * This fixes the old triangular accumulation bug where session accumulators
+   * were written in full on each request, inflating totals exponentially.
+   */
+  private persist(originalChars: number, compressedChars: number, savings: Savings): void {
     try {
       const dir = join(homedir(), '.squeezr')
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
       const existing = existsSync(STATS_FILE)
         ? JSON.parse(readFileSync(STATS_FILE, 'utf-8'))
         : {}
+
+      // Core counters — delta only
       existing.requests = (existing.requests ?? 0) + 1
-      existing.total_saved_chars = (existing.total_saved_chars ?? 0) + (this.totalOriginalChars - this.totalCompressedChars)
-      existing.total_original_chars = (existing.total_original_chars ?? 0) + this.totalOriginalChars
+      existing.total_saved_chars = (existing.total_saved_chars ?? 0) + (originalChars - compressedChars)
+      existing.total_original_chars = (existing.total_original_chars ?? 0) + originalChars
+
+      // Breakdown — delta only
+      existing.det_saved_chars = (existing.det_saved_chars ?? 0) + (savings.detSavedChars ?? 0)
+      existing.dedup_saved_chars = (existing.dedup_saved_chars ?? 0) + (savings.dedupSavedChars ?? 0)
+      existing.ai_saved_chars = (existing.ai_saved_chars ?? 0) + (savings.aiSavedChars ?? 0)
+      existing.overhead_chars = (existing.overhead_chars ?? 0) + (savings.overheadChars ?? 0)
+      existing.ai_compression_calls = (existing.ai_compression_calls ?? 0) + savings.compressed
+      existing.sysprompt_saved_chars = (existing.sysprompt_saved_chars ?? 0) + (this.totalSyspromptSaved > 0 ? this.totalSyspromptSaved : 0)
+      // Reset sysprompt counter after persisting to avoid double-counting
+      this.totalSyspromptSaved = 0
+
+      // By-tool: write current session snapshot (these are already correct cumulative values)
       const bt = existing.by_tool ?? {}
       for (const [tool, data] of Object.entries(this.byTool)) {
         if (!bt[tool]) bt[tool] = { count: 0, savedChars: 0, originalChars: 0 }
@@ -116,6 +165,7 @@ export class Stats {
         bt[tool].originalChars = data.originalChars
       }
       existing.by_tool = bt
+
       writeFileSync(STATS_FILE, JSON.stringify(existing))
     } catch { /* ignore */ }
   }
