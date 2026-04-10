@@ -1051,7 +1051,7 @@ function fillGauge(fillId, pctId, remId, resetId, remaining, limit, resetEpoch) 
   document.getElementById(remId).textContent = fmtTokens(remaining) + ' remaining'
   if (resetId && resetEpoch) {
     const secs = Math.max(0, Math.round((resetEpoch - Date.now()) / 1000))
-    document.getElementById(resetId).textContent = secs > 0 ? 'resets in ' + secs + 's' : 'updating...'
+    document.getElementById(resetId).textContent = secs > 0 ? 'resets in ' + secs + 's' : ''
   }
 }
 
@@ -1240,7 +1240,7 @@ function startLimitsCountdown(limitsData) {
       const el = document.getElementById(id)
       if (!el) return
       const secs = Math.max(0, Math.round((resetEpoch - Date.now()) / 1000))
-      el.textContent = secs > 0 ? 'resets in ' + secs + 's' : 'updating...'
+      el.textContent = secs > 0 ? 'resets in ' + secs + 's' : ''
     }
     const d = limitsData
     if (d?.anthropic?.rl?.hasData) {
