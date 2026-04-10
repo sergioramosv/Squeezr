@@ -414,7 +414,10 @@ export async function maybeRefreshOpenAISessionLimits(force = false): Promise<vo
 
   openAISessionRefreshInFlight = new Promise<void>((resolve) => {
     const { cmd, args } = codexAppServerCommand()
-    const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(cmd, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
     let stdoutBuf = ''
     let finished = false
 

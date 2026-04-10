@@ -2,6 +2,10 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.21.6] - 2026-04-10
+### Fixed
+- **Windows: hidden Codex limit refresh shell** - The OpenAI/Codex session-limit refresh now spawns the local `codex app-server` with `windowsHide: true`, so Windows no longer flashes transient `cmd.exe` windows while the dashboard refreshes limits.
+
 ## [1.21.5] - 2026-04-10
 ### Fixed
 - **Codex limits: real session + weekly windows** - OpenAI/Codex limits now come from the local `codex app-server` rate-limit RPC instead of `x-ratelimit-*` API headers. The Limits page shows real session/weekly percentages and reset countdowns for ChatGPT-plan Codex usage.
