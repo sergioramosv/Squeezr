@@ -497,7 +497,7 @@ tr:last-child td{border-bottom:none}
         <div class="limits-gauge-grid">
           <div class="limits-gauge">
             <div class="limits-gauge-label">
-              <span>Tokens / minute</span>
+              <span id="oai-tok-label">Session window</span>
               <span id="oai-tok-pct" style="color:var(--muted)">—</span>
             </div>
             <div class="limits-gauge-bar"><div class="limits-gauge-fill" id="oai-tok-fill" style="width:0%"></div></div>
@@ -508,7 +508,7 @@ tr:last-child td{border-bottom:none}
           </div>
           <div class="limits-gauge">
             <div class="limits-gauge-label">
-              <span>Requests / minute</span>
+              <span id="oai-req-label">Weekly window</span>
               <span id="oai-req-pct" style="color:var(--muted)">—</span>
             </div>
             <div class="limits-gauge-bar"><div class="limits-gauge-fill" id="oai-req-fill" style="width:0%"></div></div>
@@ -1055,6 +1055,34 @@ function fillGauge(fillId, pctId, remId, resetId, remaining, limit, resetEpoch) 
   }
 }
 
+function formatResetCountdown(resetEpoch) {
+  const secs = resetEpoch > 0 ? Math.max(0, Math.round((resetEpoch - Date.now()) / 1000)) : 0
+  if (secs <= 0) return ''
+  if (secs >= 86400) return Math.floor(secs / 86400) + 'd ' + Math.floor((secs % 86400) / 3600) + 'h'
+  if (secs >= 3600) return Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm'
+  if (secs >= 60) return Math.floor(secs / 60) + 'm'
+  return secs + 's'
+}
+
+function fillPercentGauge(fillId, pctId, remId, resetId, usedPercent, resetEpoch) {
+  if (usedPercent == null) {
+    document.getElementById(fillId).style.width = '0%'
+    document.getElementById(pctId).textContent = 'â€”'
+    document.getElementById(remId).textContent = 'â€”'
+    if (resetId) document.getElementById(resetId).textContent = ''
+    return
+  }
+  const pct = Math.max(0, Math.min(100, Math.round(usedPercent || 0)))
+  const fill = document.getElementById(fillId)
+  fill.style.width = pct + '%'
+  fill.style.background = gaugeColor(pct)
+  document.getElementById(pctId).textContent = pct + '%'
+  document.getElementById(pctId).style.color = gaugeColor(pct)
+  document.getElementById(remId).textContent = pct >= 80 ? pct + '% used' : (100 - pct) + '% free'
+  const resetStr = formatResetCountdown(resetEpoch)
+  if (resetId) document.getElementById(resetId).textContent = resetStr ? 'resets in ' + resetStr : ''
+}
+
 function renderLimits(d) {
   if (!d) return
   const { anthropic, openai, gemini } = d
@@ -1134,17 +1162,29 @@ function renderLimits(d) {
   }
 
   // ── OpenAI ──
+  const os = openai?.session
   const orl = openai?.rl
   const ou = openai?.usage
   const oaiHasUsage = ou && (ou.inputSession > 0 || ou.outputSession > 0)
-  if (orl?.hasData) {
+  if (os?.hasData) {
+    document.getElementById('oai-badge').className = 'limits-cli-badge live'
+    document.getElementById('oai-badge').textContent = os.planType || 'session'
+    document.getElementById('oai-tok-label').textContent = (os.primary?.windowDurationMins || 300) >= 300 ? '5-hour window' : 'session window'
+    document.getElementById('oai-req-label').textContent = (os.secondary?.windowDurationMins || 0) >= 10080 ? '7-day window' : 'weekly window'
+    fillPercentGauge('oai-tok-fill','oai-tok-pct','oai-tok-rem','oai-tok-reset', os.primary?.usedPercent, os.primary?.resetsAt || 0)
+    fillPercentGauge('oai-req-fill','oai-req-pct','oai-req-rem','oai-req-reset', os.secondary?.usedPercent, os.secondary?.resetsAt || 0)
+  } else if (orl?.hasData) {
     document.getElementById('oai-badge').className = 'limits-cli-badge live'
     document.getElementById('oai-badge').textContent = 'live'
+    document.getElementById('oai-tok-label').textContent = 'tokens / minute'
+    document.getElementById('oai-req-label').textContent = 'requests / minute'
     fillGauge('oai-tok-fill','oai-tok-pct','oai-tok-rem','oai-tok-reset', orl.tokensRemaining, orl.tokensLimit, orl.tokensResetEpoch)
     fillGauge('oai-req-fill','oai-req-pct','oai-req-rem','oai-req-reset', orl.requestsRemaining, orl.requestsLimit, orl.requestsResetEpoch)
   } else if (oaiHasUsage) {
     document.getElementById('oai-badge').className = 'limits-cli-badge live'
     document.getElementById('oai-badge').textContent = 'tracking'
+    document.getElementById('oai-tok-label').textContent = 'session total'
+    document.getElementById('oai-req-label').textContent = 'session requests'
     document.getElementById('oai-tok-pct').textContent = fmtTokens(ou.inputSession + ou.outputSession)
     document.getElementById('oai-tok-rem').textContent = 'session total'
     document.getElementById('oai-req-pct').textContent = ou.requestsSession + ' reqs'
@@ -1212,6 +1252,12 @@ function startLimitsCountdown(limitsData) {
     if (d?.openai?.rl?.hasData) {
       updateReset('oai-tok-reset', d.openai.rl.tokensResetEpoch)
       updateReset('oai-req-reset', d.openai.rl.requestsResetEpoch)
+    }
+    if (d?.openai?.session?.hasData) {
+      const tok = d.openai.session.primary?.resetsAt || 0
+      const req = d.openai.session.secondary?.resetsAt || 0
+      updateReset('oai-tok-reset', tok)
+      updateReset('oai-req-reset', req)
     }
   }, 1000)
 }

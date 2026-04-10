@@ -1,3 +1,7 @@
+import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+
 /**
  * Squeezr Limits — real-time rate limit tracking per AI CLI
  *
@@ -44,6 +48,29 @@ export interface OpenAIBillingState {
   hardLimitUsd: number
   softLimitUsd: number
   lastFetched: number
+}
+
+export interface OpenAISessionWindow {
+  usedPercent: number
+  resetsAt: number
+  windowDurationMins: number
+}
+
+export interface OpenAISessionCredits {
+  balance: string
+  hasCredits: boolean
+  unlimited: boolean
+}
+
+export interface OpenAISessionRateLimitState {
+  limitId: string
+  limitName: string
+  planType: string
+  primary: OpenAISessionWindow | null
+  secondary: OpenAISessionWindow | null
+  credits: OpenAISessionCredits | null
+  lastFetched: number
+  hasData: boolean
 }
 
 export interface GeminiErrorState {
@@ -106,6 +133,17 @@ export const openAIBilling: OpenAIBillingState = {
   creditBalanceUsd: 0, hardLimitUsd: 0, softLimitUsd: 0, lastFetched: 0,
 }
 
+export const openAISessionLimits: OpenAISessionRateLimitState = {
+  limitId: '',
+  limitName: '',
+  planType: '',
+  primary: null,
+  secondary: null,
+  credits: null,
+  lastFetched: 0,
+  hasData: false,
+}
+
 // Last API key seen per CLI — used for proactive billing fetches
 let lastAnthropicKey = ''
 let lastOpenAIKey    = ''
@@ -118,6 +156,41 @@ export function storeKey(cli: 'anthropic' | 'openai', key: string): void {
 
 export function storedKey(cli: 'anthropic' | 'openai'): string {
   return cli === 'anthropic' ? lastAnthropicKey : lastOpenAIKey
+}
+
+function normalizeWindow(v: unknown): OpenAISessionWindow | null {
+  if (!v || typeof v !== 'object') return null
+  const w = v as Record<string, unknown>
+  const usedPercent = Number(w.usedPercent)
+  if (!Number.isFinite(usedPercent)) return null
+  return {
+    usedPercent: Math.max(0, Math.min(100, Math.round(usedPercent))),
+    resetsAt: Number(w.resetsAt) || 0,
+    windowDurationMins: Number(w.windowDurationMins) || 0,
+  }
+}
+
+function normalizeCredits(v: unknown): OpenAISessionCredits | null {
+  if (!v || typeof v !== 'object') return null
+  const c = v as Record<string, unknown>
+  return {
+    balance: String(c.balance ?? ''),
+    hasCredits: Boolean(c.hasCredits),
+    unlimited: Boolean(c.unlimited),
+  }
+}
+
+function applyOpenAISessionSnapshot(v: unknown): void {
+  if (!v || typeof v !== 'object') return
+  const snap = v as Record<string, unknown>
+  openAISessionLimits.limitId = String(snap.limitId ?? '')
+  openAISessionLimits.limitName = String(snap.limitName ?? '')
+  openAISessionLimits.planType = String(snap.planType ?? '')
+  openAISessionLimits.primary = normalizeWindow(snap.primary)
+  openAISessionLimits.secondary = normalizeWindow(snap.secondary)
+  openAISessionLimits.credits = normalizeCredits(snap.credits)
+  openAISessionLimits.lastFetched = Date.now()
+  openAISessionLimits.hasData = Boolean(openAISessionLimits.primary || openAISessionLimits.secondary)
 }
 
 // ── Header parsers ────────────────────────────────────────────────────────────
@@ -321,10 +394,88 @@ export async function maybeRefreshOpenAIBilling(apiKey: string): Promise<void> {
 
 // ── Snapshot for API / SSE ────────────────────────────────────────────────────
 
+let openAISessionRefreshInFlight: Promise<void> | null = null
+
+function codexAppServerCommand(): { cmd: string, args: string[] } {
+  if (process.platform === 'win32') {
+    const cmdShim = process.env.APPDATA ? join(process.env.APPDATA, 'npm', 'codex.cmd') : 'codex.cmd'
+    const codexCmd = existsSync(cmdShim) ? cmdShim : 'codex.cmd'
+    return {
+      cmd: process.env.ComSpec || 'cmd.exe',
+      args: ['/d', '/s', '/c', codexCmd, 'app-server', '--listen', 'stdio://'],
+    }
+  }
+  return { cmd: 'codex', args: ['app-server', '--listen', 'stdio://'] }
+}
+
+export async function maybeRefreshOpenAISessionLimits(force = false): Promise<void> {
+  if (!force && openAISessionLimits.lastFetched > 0 && Date.now() - openAISessionLimits.lastFetched < 60_000) return
+  if (openAISessionRefreshInFlight) return openAISessionRefreshInFlight
+
+  openAISessionRefreshInFlight = new Promise<void>((resolve) => {
+    const { cmd, args } = codexAppServerCommand()
+    const child = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdoutBuf = ''
+    let finished = false
+
+    const finish = () => {
+      if (finished) return
+      finished = true
+      try { child.kill() } catch { /* ignore */ }
+      openAISessionRefreshInFlight = null
+      resolve()
+    }
+
+    const timer = setTimeout(finish, 4000)
+    const send = (msg: unknown) => {
+      try { child.stdin.write(JSON.stringify(msg) + '\n') } catch { finish() }
+    }
+
+    child.on('error', finish)
+    child.on('exit', () => {
+      clearTimeout(timer)
+      finish()
+    })
+    child.stderr.on('data', () => { /* ignore wrapper warnings */ })
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBuf += chunk.toString('utf-8')
+      const lines = stdoutBuf.split(/\r?\n/)
+      stdoutBuf = lines.pop() ?? ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('{')) continue
+        try {
+          const msg = JSON.parse(trimmed) as { id?: number, result?: Record<string, unknown> }
+          if (msg.id === 1) {
+            send({ jsonrpc: '2.0', id: 2, method: 'account/rateLimits/read', params: null })
+            continue
+          }
+          if (msg.id === 2 && msg.result) {
+            const buckets = msg.result.rateLimitsByLimitId as Record<string, unknown> | undefined
+            applyOpenAISessionSnapshot(buckets?.codex ?? msg.result.rateLimits)
+            clearTimeout(timer)
+            finish()
+            return
+          }
+        } catch { /* ignore malformed lines */ }
+      }
+    })
+
+    send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { clientInfo: { name: 'squeezr', version: '1.0.0' } },
+    })
+  })
+
+  return openAISessionRefreshInFlight
+}
+
 export function limitsSnapshot() {
   return {
     anthropic: { rl: anthropicRL, usage: anthropicUsage, unified: anthropicUnified },
-    openai:    { rl: openaiRL,    usage: openaiUsage, billing: openAIBilling },
+    openai:    { rl: openaiRL,    usage: openaiUsage, billing: openAIBilling, session: openAISessionLimits },
     gemini:    { rl: geminiRL,    usage: geminiUsage, errors: geminiErrors },
   }
 }

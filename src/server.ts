@@ -40,6 +40,7 @@ import {
   addGeminiUsage,
   makeSseUsageParser,
   maybeRefreshOpenAIBilling,
+  maybeRefreshOpenAISessionLimits,
   storeKey,
   limitsSnapshot,
 } from './limits.js'
@@ -471,7 +472,8 @@ app.post('/v1beta/models/*', async (c) => {
 
 // ── Squeezr internal endpoints ────────────────────────────────────────────────
 
-function buildStatsPayload() {
+async function buildStatsPayload() {
+  await maybeRefreshOpenAISessionLimits().catch(() => {})
   return {
     ...stats.summary(),
     cache: getCache(config).stats(),
@@ -487,7 +489,7 @@ function buildStatsPayload() {
 }
 
 app.get('/squeezr/stats', (c) => {
-  return c.json(buildStatsPayload())
+  return buildStatsPayload().then(d => c.json(d))
 })
 
 app.get('/squeezr/health', (c) => {
@@ -529,17 +531,18 @@ app.get('/squeezr/dashboard', (c) => {
 
 app.get('/squeezr/events', (c) => {
   return streamSSE(c, async (s) => {
-    await s.writeSSE({ data: JSON.stringify(buildStatsPayload()) })
+    await s.writeSSE({ data: JSON.stringify(await buildStatsPayload()) })
     while (true) {
       await s.sleep(2000)
       try {
-        await s.writeSSE({ data: JSON.stringify(buildStatsPayload()) })
+        await s.writeSSE({ data: JSON.stringify(await buildStatsPayload()) })
       } catch { break }
     }
   })
 })
 
-app.get('/squeezr/limits', (c) => {
+app.get('/squeezr/limits', async (c) => {
+  await maybeRefreshOpenAISessionLimits().catch(() => {})
   return c.json(limitsSnapshot())
 })
 

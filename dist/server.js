@@ -14,7 +14,7 @@ import { sessionCacheSize } from './sessionCache.js';
 import { detPatternHits } from './deterministic.js';
 import { VERSION } from './version.js';
 import { recordRequest, getCurrentSession, getProjectAggregates, getAllSessionsForHistory, } from './history.js';
-import { updateAnthropicFromHeaders, updateOpenAIFromHeaders, updateGeminiFrom429, addAnthropicUsage, addOpenAIUsage, addGeminiUsage, makeSseUsageParser, maybeRefreshOpenAIBilling, storeKey, limitsSnapshot, } from './limits.js';
+import { updateAnthropicFromHeaders, updateOpenAIFromHeaders, updateGeminiFrom429, addAnthropicUsage, addOpenAIUsage, addGeminiUsage, makeSseUsageParser, maybeRefreshOpenAIBilling, maybeRefreshOpenAISessionLimits, storeKey, limitsSnapshot, } from './limits.js';
 // ── Project name extraction ────────────────────────────────────────────────────
 // Manual project override — set via /squeezr/project endpoint or MCP tool
 let manualProject = null;
@@ -56,12 +56,17 @@ function extractProjectName(body) {
         }
         // Fallback: extract LAST meaningful path segment from system prompt
         // e.g. C:\Users\Ramos\Documents\InvoiceApp\src → InvoiceApp
+        // Only match filesystem paths (not URLs like https://github.com)
         const pathMatch = text.match(/(?:[A-Za-z]:[\\/]|\/(?:Users|home|workspace|projects|Documents)[\\/])[^\s<>"*?|]+/i);
-        if (pathMatch) {
+        if (pathMatch && !pathMatch[0].includes('://')) {
             const parts = pathMatch[0].replace(/\\/g, '/').split('/').filter(Boolean);
-            const skip = new Set(['users', 'home', 'documents', 'workspace', 'projects', 'desktop', 'dev', 'src', 'repos']);
+            const skip = new Set([
+                'users', 'home', 'documents', 'workspace', 'projects', 'desktop',
+                'dev', 'src', 'repos', 'mnt', 'c', 'var', 'tmp', 'opt', 'usr',
+                'lib', 'bin', 'etc', 'node_modules', '.claude', '.config',
+            ]);
             for (const pt of parts) {
-                if (!skip.has(pt.toLowerCase()) && !/^[a-z]:$/i.test(pt))
+                if (!skip.has(pt.toLowerCase()) && !/^[a-z]:$/i.test(pt) && pt.length > 1)
                     return pt;
             }
             if (parts.length)
@@ -395,7 +400,8 @@ app.post('/v1beta/models/*', async (c) => {
     return c.body(geminiRespBuf, resp.status, respHeaders);
 });
 // ── Squeezr internal endpoints ────────────────────────────────────────────────
-function buildStatsPayload() {
+async function buildStatsPayload() {
+    await maybeRefreshOpenAISessionLimits().catch(() => { });
     return {
         ...stats.summary(),
         cache: getCache(config).stats(),
@@ -410,7 +416,7 @@ function buildStatsPayload() {
     };
 }
 app.get('/squeezr/stats', (c) => {
-    return c.json(buildStatsPayload());
+    return buildStatsPayload().then(d => c.json(d));
 });
 app.get('/squeezr/health', (c) => {
     return c.json({ status: 'ok', version: VERSION });
@@ -445,11 +451,11 @@ app.get('/squeezr/dashboard', (c) => {
 });
 app.get('/squeezr/events', (c) => {
     return streamSSE(c, async (s) => {
-        await s.writeSSE({ data: JSON.stringify(buildStatsPayload()) });
+        await s.writeSSE({ data: JSON.stringify(await buildStatsPayload()) });
         while (true) {
             await s.sleep(2000);
             try {
-                await s.writeSSE({ data: JSON.stringify(buildStatsPayload()) });
+                await s.writeSSE({ data: JSON.stringify(await buildStatsPayload()) });
             }
             catch {
                 break;
@@ -457,7 +463,8 @@ app.get('/squeezr/events', (c) => {
         }
     });
 });
-app.get('/squeezr/limits', (c) => {
+app.get('/squeezr/limits', async (c) => {
+    await maybeRefreshOpenAISessionLimits().catch(() => { });
     return c.json(limitsSnapshot());
 });
 // ── History + Projects endpoints ──────────────────────────────────────────────

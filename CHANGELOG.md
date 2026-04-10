@@ -2,6 +2,12 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.21.5] - 2026-04-10
+### Fixed
+- **Codex limits: real session + weekly windows** - OpenAI/Codex limits now come from the local `codex app-server` rate-limit RPC instead of `x-ratelimit-*` API headers. The Limits page shows real session/weekly percentages and reset countdowns for ChatGPT-plan Codex usage.
+- **Limits UI: removed `tokens / minute` for Codex** - OpenAI card now uses `5-hour window` / `7-day window` labels when session limits are available, with session-tracking fallbacks when they are not.
+- **Git noise: local Codex schema artifacts ignored** - Added `.tmp-codex-schema/` to `.gitignore` so local protocol inspection files do not flood the working tree.
+
 ## [1.21.4] - 2026-04-10
 ### Fixed
 - **Windows auto-start: 3-tier fallback** — `squeezr setup` now tries NSSM → Task Scheduler (without admin) → Startup folder VBS script. Previously Task Scheduler required admin (`RunLevel Highest`) and silently failed, leaving no auto-start registered. The new VBS fallback writes a silent launcher to `%APPDATA%\...\Startup\` which works without any permissions.
