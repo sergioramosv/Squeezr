@@ -2,6 +2,14 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.22.0] - 2026-04-10
+### Added
+- **Resilience: Circuit breaker for AI compression** — After 3 consecutive AI compression failures (Haiku/GPT-4o-mini/Gemini Flash), Squeezr automatically skips AI compression for 60s, then probes recovery. Prevents hammering a down backend. State visible in dashboard, MCP `squeezr_status`, and `squeezr status` CLI.
+- **Resilience: Per-request latency tracking** — Tracks p50/p95/p99 compression latency (total, deterministic, and AI separately) with a rolling 200-sample window. Visible in dashboard overview cards and MCP `squeezr_stats`.
+- **Resilience: Expand rate tracking** — Counts how often the model calls `squeezr_expand` to recover compressed content. High expand rate = compression too aggressive. Visible as percentage in dashboard, MCP stats, with color coding (green <10%, yellow <25%, red >25%).
+- **Resilience: Enhanced health check** — `GET /squeezr/health` now returns circuit breaker state, bypass status, compression mode, uptime, expand store pressure, and compression stats. `squeezr status` CLI shows all new fields.
+- **Bypass mode** — `squeezr bypass` CLI command, `POST /squeezr/bypass` endpoint, `squeezr_bypass` MCP tool, and dashboard sidebar toggle. Instantly disables all compression without restart. Requests still pass through and are logged. Runtime-only (resets on restart). Per-call timeout of 5s on all AI compression calls.
+
 ## [1.21.8] - 2026-04-10
 ### Fixed
 - **Claude Limits: prefer subscription windows** - When unified subscription data is available, the Limits page now prioritizes Claude `5-hour window` and `7-day window` rendering over legacy per-minute rate-limit headers, so it no longer falls back to `tokens / minute` incorrectly.

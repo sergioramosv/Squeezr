@@ -247,9 +247,15 @@ tr:last-child td{border-bottom:none}
   </nav>
 
   <div id="sidebar-footer">
-    <div class="status-row">
+    <div class="status-row" style="margin-bottom:8px">
       <div class="dot" id="status-dot"></div>
       <span id="status-text">Connecting…</span>
+    </div>
+    <div class="status-row" style="margin-bottom:6px">
+      <span id="cb-indicator" style="font-size:11px" title="Circuit breaker">🟢 Circuit OK</span>
+    </div>
+    <div class="status-row" style="cursor:pointer" id="bypass-toggle" title="Toggle bypass mode">
+      <span style="font-size:11px" id="bypass-label">▶️ Compression ON</span>
     </div>
   </div>
 </div>
@@ -286,6 +292,19 @@ tr:last-child td{border-bottom:none}
           <div class="card-label">Est. Cost Saved</div>
           <div class="card-value" id="c-cost">—</div>
           <div class="card-sub">@ $3 / MTok</div>
+        </div>
+      </div>
+
+      <div class="cards-grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+        <div class="card">
+          <div class="card-label">Compression Latency (p50 / p95)</div>
+          <div class="card-value" id="c-latency">—</div>
+          <div class="card-sub" id="c-latency-sub">ms per request</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Expand Rate</div>
+          <div class="card-value" id="c-expand-rate">—</div>
+          <div class="card-sub" id="c-expand-rate-sub">lower is better</div>
         </div>
       </div>
 
@@ -878,6 +897,50 @@ function renderOverview(d) {
     document.getElementById('bd-overhead').textContent = bd.overhead > 0 ? '+' + fmtN(bd.overhead) : '0'
     document.getElementById('bd-aicalls').textContent = bd.ai_calls > 0 ? bd.ai_calls + ' calls' : '0'
   }
+
+  // ── Resilience indicators ──────────────────────────────────────────────────
+
+  // Latency card
+  const lat = d.latency?.total
+  if (lat && lat.count > 0) {
+    document.getElementById('c-latency').textContent = lat.p50 + ' / ' + lat.p95
+    document.getElementById('c-latency-sub').textContent = lat.count + ' samples, avg ' + lat.avg + 'ms'
+  } else {
+    document.getElementById('c-latency').textContent = '—'
+    document.getElementById('c-latency-sub').textContent = 'no data yet'
+  }
+
+  // Expand rate card
+  const exp = d.expand
+  if (exp && exp.calls > 0) {
+    const rateColor = exp.rate_pct > 25 ? 'var(--red)' : exp.rate_pct > 10 ? 'var(--yellow)' : 'var(--green)'
+    document.getElementById('c-expand-rate').textContent = exp.rate_pct + '%'
+    document.getElementById('c-expand-rate').style.color = rateColor
+    document.getElementById('c-expand-rate-sub').textContent = exp.calls + ' expand calls / ' + (d.compressions || 0) + ' compressions'
+  } else {
+    document.getElementById('c-expand-rate').textContent = '0%'
+    document.getElementById('c-expand-rate').style.color = 'var(--green)'
+    document.getElementById('c-expand-rate-sub').textContent = 'no expand calls (good)'
+  }
+
+  // Circuit breaker indicator (sidebar)
+  const cb = d.circuit_breaker
+  if (cb) {
+    const cbEl = document.getElementById('cb-indicator')
+    const icons = { closed: '🟢 Circuit OK', open: '🔴 Circuit OPEN', 'half-open': '🟡 Probing…' }
+    cbEl.textContent = icons[cb.state] || cb.state
+    if (cb.total_trips > 0) cbEl.textContent += ' (' + cb.total_trips + ' trip' + (cb.total_trips > 1 ? 's' : '') + ')'
+  }
+
+  // Bypass toggle (sidebar)
+  const bypassLabel = document.getElementById('bypass-label')
+  if (d.bypassed) {
+    bypassLabel.textContent = '⏸️ Bypass ON'
+    bypassLabel.style.color = 'var(--yellow)'
+  } else {
+    bypassLabel.textContent = '▶️ Compression ON'
+    bypassLabel.style.color = 'var(--green)'
+  }
 }
 
 // ── Projects page ────────────────────────────────────────────────────────────
@@ -1352,6 +1415,15 @@ document.querySelectorAll('.mode-btn[data-mode]').forEach(btn => {
       console.error('mode update failed', e)
     }
   })
+})
+
+// ── Bypass toggle ────────────────────────────────────────────────────────────
+document.getElementById('bypass-toggle').addEventListener('click', async () => {
+  try {
+    await fetch('/squeezr/bypass', { method: 'POST', headers: {'content-type':'application/json'}, body: '{}' })
+  } catch(e) {
+    console.error('bypass toggle failed', e)
+  }
 })
 
 // ── SSE ───────────────────────────────────────────────────────────────────────

@@ -116,8 +116,8 @@ Built-in MCP server (`squeezr-mcp`) that gives any MCP-capable AI CLI real-time 
 
 | Tool | Description |
 |------|-------------|
-| `squeezr_status` | Is proxy running? Version, port, uptime, mode, dry-run state |
-| `squeezr_stats` | Token savings, compression %, cost saved, savings breakdown (deterministic/AI/dedup/system prompt/overhead), per-tool breakdown |
+| `squeezr_status` | Is proxy running? Version, port, uptime, mode, circuit breaker state, bypass status |
+| `squeezr_stats` | Token savings, compression %, cost saved, savings breakdown, per-tool breakdown, latency (p50/p95/p99), expand rate |
 | `squeezr_set_mode` | Change compression mode instantly (soft / normal / aggressive / critical) |
 | `squeezr_config` | Current thresholds, keepRecent, cache sizes, AI-skipped tools |
 | `squeezr_habits` | Detect wasteful patterns this session (duplicate reads, high Bash count, cache efficiency) |
@@ -125,6 +125,7 @@ Built-in MCP server (`squeezr-mcp`) that gives any MCP-capable AI CLI real-time 
 | `squeezr_check_updates` | Check npm for newer Squeezr version |
 | `squeezr_update` | Update to latest version via `npm install -g squeezr-ai@latest` |
 | `squeezr_set_project` | Manually set/clear the current project name (overrides auto-detection) |
+| `squeezr_bypass` | Toggle bypass mode — disable compression instantly without restart (runtime-only) |
 
 Every MCP tool response automatically checks for updates and appends a notification banner when a new version is available.
 
@@ -245,11 +246,25 @@ squeezr gain --session # live session savings from the running proxy
 squeezr gain --details # all-time stats with per-tool breakdown
 squeezr gain --reset   # reset all-time counters
 squeezr discover       # detect which AI CLIs are installed
+squeezr bypass         # toggle bypass mode (skip compression, keep logging)
+squeezr bypass --on    # enable bypass (disable compression)
+squeezr bypass --off   # disable bypass (resume compression)
+squeezr tunnel         # expose proxy via Cloudflare Tunnel (for Cursor IDE)
 squeezr mcp install    # register MCP server in Claude Code, Cursor, Windsurf, Cline
 squeezr mcp uninstall  # remove MCP server registration
 squeezr uninstall      # remove Squeezr completely (env vars, CA, auto-start, logs)
 squeezr version        # print version
 ```
+
+## Resilience
+
+Squeezr sits in the critical path between your AI CLI and the upstream API. It's designed to never break your workflow:
+
+- **Circuit breaker** — If the AI compression backend (Haiku, GPT-4o-mini, etc.) fails 3 times in a row, Squeezr automatically skips AI compression for 60 seconds, then probes recovery. Deterministic compression continues working. Visible in dashboard, `squeezr status`, and MCP.
+- **5-second AI timeout** — Each AI compression call has a hard 5s timeout. If the backend is slow, the original content passes through unmodified.
+- **Bypass mode** — `squeezr bypass` instantly disables all compression without restarting. Requests still pass through and are logged. Toggle via CLI, MCP, dashboard, or REST API.
+- **Expand rate tracking** — Monitors how often the model calls `squeezr_expand` to recover compressed content. High expand rate signals the compression is too aggressive.
+- **Latency tracking** — p50/p95/p99 compression latency visible in dashboard and MCP stats.
 
 ## Compression backends
 

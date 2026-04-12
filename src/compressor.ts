@@ -6,6 +6,7 @@ import { storeOriginal } from './expand.js'
 import { hashText, getBlock, setBlock, SessionBlock } from './sessionCache.js'
 import type { Config } from './config.js'
 import { effectiveThreshold, effectiveKeepRecent, aiEnabled } from './config.js'
+import { circuitBreaker } from './circuitBreaker.js'
 
 export interface Savings {
   compressed: number
@@ -19,6 +20,9 @@ export interface Savings {
   dedupSavedChars?: number   // read-dedup savings
   aiSavedChars?: number      // AI compression savings (net, after tag overhead)
   overheadChars?: number     // chars added by [squeezr:XXXX] tags
+  // Latency tracking (ms)
+  detMs?: number             // deterministic preprocessing time
+  aiMs?: number              // AI compression time
 }
 
 const COMPRESS_PROMPT =
@@ -110,11 +114,13 @@ async function runCompression(
         const cached = cache.get(preprocessed)
         if (cached) return { ...item, original: item.text, result: cached }
       }
-      const compressed = await compressFn(preprocessed)
+      const compressed = await circuitBreaker.call(() => compressFn(preprocessed))
       if (config.cacheEnabled) cache.set(preprocessed, compressed)
       return { ...item, original: item.text, result: compressed }
     }),
   )
+  const failures = results.filter(r => r.status === 'rejected').length
+  if (failures > 0) console.log(`[squeezr] ${failures} AI compression(s) failed (circuit: ${circuitBreaker.getState()})`)
   return results
     .filter((r) => r.status === 'fulfilled')
     .map((r) => (r as PromiseFulfilledResult<{ index: number; subIndex?: number; original: string; result: string; tool: string }>).value)
@@ -234,6 +240,7 @@ export async function compressAnthropicMessages(
 
   // ── Step 1: Deterministic preprocessing on ALL tool results (turn 1+) ───────
   // Replaces RTK: applied to recent blocks too, no manual `rtk` prefix needed.
+  const detT0 = Date.now()
   let detSaved = 0
   for (const { index, subIndex, text, tool } of allResults) {
     if (dedupedSet.has(`${index}:${subIndex}`)) continue  // already replaced by dedup
@@ -243,6 +250,7 @@ export async function compressAnthropicMessages(
       detSaved += text.length - det.length
     }
   }
+  const detMs = Date.now() - detT0
   if (detSaved > 0) {
     const tokens = Math.round(detSaved / 3.5)
     console.log(`[squeezr/det] Deterministic: -${detSaved.toLocaleString()} chars (~${tokens} tokens) across ${allResults.length} block(s)`)
@@ -252,12 +260,18 @@ export async function compressAnthropicMessages(
   const candidates = allResults.slice(0, Math.max(0, allResults.length - effectiveKeepRecent(config)))
   const toProcess = candidates.filter(c => c.text.length >= threshold && !dedupedSet.has(`${c.index}:${c.subIndex}`))
 
-  if (toProcess.length === 0) return [msgs, emptySavings(false, detSaved, readDedupSaved)]
+  if (toProcess.length === 0) return [msgs, emptySavings(false, detSaved, readDedupSaved, detMs)]
+
+  // Circuit breaker: skip AI compression entirely if backend is down
+  if (!circuitBreaker.shouldAllow()) {
+    console.log(`[squeezr] Circuit breaker open — skipping AI compression for ${toProcess.length} block(s)`)
+    return [msgs, emptySavings(false, detSaved, readDedupSaved, detMs)]
+  }
 
   if (config.dryRun) {
     const potential = toProcess.reduce((sum, c) => sum + c.text.length, 0)
     console.log(`[squeezr dry-run] Would AI-compress ${toProcess.length} block(s) | potential -${potential.toLocaleString()} chars | pressure=${Math.round(pressure * 100)}%`)
-    return [msgs, emptySavings(true, detSaved, readDedupSaved)]
+    return [msgs, emptySavings(true, detSaved, readDedupSaved, detMs)]
   }
 
   // Differential: split session cache hits from uncached
@@ -275,9 +289,11 @@ export async function compressAnthropicMessages(
     }
   }
 
+  const aiT0 = Date.now()
   const freshlyCompressed = toCompress.length > 0
     ? await runCompression(toCompress, t => compressWithHaiku(t, apiKey), config)
     : []
+  const aiMs = Date.now() - aiT0
 
   let totalOriginal = 0
   let totalCompressed = 0
@@ -317,6 +333,8 @@ export async function compressAnthropicMessages(
     dedupSavedChars: readDedupSaved,
     aiSavedChars: totalAiSaved,
     overheadChars: totalOverhead,
+    detMs,
+    aiMs,
   }]
 }
 
@@ -392,6 +410,7 @@ export async function compressOpenAIMessages(
   }
 
   // Step 1: Deterministic preprocessing on ALL tool results
+  const oaiDetT0 = Date.now()
   let detSaved = 0
   for (const { index, text, tool } of allResults) {
     if (dedupedIndices.has(index)) continue
@@ -401,6 +420,7 @@ export async function compressOpenAIMessages(
       detSaved += text.length - det.length
     }
   }
+  const oaiDetMs = Date.now() - oaiDetT0
   if (detSaved > 0) {
     const tag = isLocal ? 'ollama' : 'codex'
     console.log(`[squeezr/det/${tag}] Deterministic: -${detSaved.toLocaleString()} chars across ${allResults.length} block(s)`)
@@ -410,12 +430,18 @@ export async function compressOpenAIMessages(
   const candidates = allResults.slice(0, Math.max(0, allResults.length - effectiveKeepRecent(config)))
   const toProcess = candidates.filter(c => c.text.length >= threshold && !dedupedIndices.has(c.index))
 
-  if (toProcess.length === 0) return [msgs, emptySavings(false, detSaved, readDedupSaved)]
+  if (toProcess.length === 0) return [msgs, emptySavings(false, detSaved, readDedupSaved, oaiDetMs)]
+
+  // Circuit breaker: skip AI compression entirely if backend is down
+  if (!circuitBreaker.shouldAllow()) {
+    console.log(`[squeezr] Circuit breaker open — skipping AI compression for ${toProcess.length} block(s)`)
+    return [msgs, emptySavings(false, detSaved, readDedupSaved, oaiDetMs)]
+  }
 
   if (config.dryRun) {
     const tag = isLocal ? 'ollama' : 'codex'
     console.log(`[squeezr dry-run/${tag}] Would AI-compress ${toProcess.length} block(s) | potential -${toProcess.reduce((s, c) => s + c.text.length, 0).toLocaleString()} chars`)
-    return [msgs, emptySavings(true, detSaved, readDedupSaved)]
+    return [msgs, emptySavings(true, detSaved, readDedupSaved, oaiDetMs)]
   }
 
   const sessionHits: Array<{ index: number; tool: string; block: SessionBlock }> = []
@@ -437,9 +463,11 @@ export async function compressOpenAIMessages(
     ? t => compressWithOllama(t, config.localUpstreamUrl, config.localCompressionModel)
     : t => compressWithGptMini(t, apiKey)
 
+  const oaiAiT0 = Date.now()
   const freshlyCompressed = toCompress.length > 0
     ? await runCompression(toCompress, compressFn, config)
     : []
+  const oaiAiMs = Date.now() - oaiAiT0
 
   let totalOriginal = 0, totalCompressed = 0, totalOverhead = 0, totalAiSaved = 0
   const byTool: Savings['byTool'] = []
@@ -468,7 +496,7 @@ export async function compressOpenAIMessages(
   }
   if (sessionHits.length > 0) console.log(`[squeezr] Session cache: ${sessionHits.length} block(s) reused`)
 
-  return [msgs, { compressed: freshlyCompressed.length, savedChars: totalOriginal - totalCompressed, originalChars: totalOriginal, byTool, dryRun: false, sessionCacheHits: sessionHits.length, detSavedChars: detSaved, dedupSavedChars: readDedupSaved, aiSavedChars: totalAiSaved, overheadChars: totalOverhead }]
+  return [msgs, { compressed: freshlyCompressed.length, savedChars: totalOriginal - totalCompressed, originalChars: totalOriginal, byTool, dryRun: false, sessionCacheHits: sessionHits.length, detSavedChars: detSaved, dedupSavedChars: readDedupSaved, aiSavedChars: totalAiSaved, overheadChars: totalOverhead, detMs: oaiDetMs, aiMs: oaiAiMs }]
 }
 
 // ── Gemini format ─────────────────────────────────────────────────────────────
@@ -532,6 +560,7 @@ export async function compressGeminiContents(
   }
 
   // Step 1: Deterministic preprocessing on ALL tool results
+  const gemDetT0 = Date.now()
   let detSaved = 0
   for (const { index, subIndex, text, tool } of allResults) {
     if (geminiDedupedSet.has(`${index}:${subIndex}`)) continue
@@ -541,17 +570,24 @@ export async function compressGeminiContents(
       detSaved += text.length - det.length
     }
   }
+  const gemDetMs = Date.now() - gemDetT0
   if (detSaved > 0) console.log(`[squeezr/det/gemini] Deterministic: -${detSaved.toLocaleString()} chars across ${allResults.length} block(s)`)
 
   // Step 2: AI compression for old blocks above threshold
   const candidates = allResults.slice(0, Math.max(0, allResults.length - effectiveKeepRecent(config)))
     .filter(c => c.text.length >= threshold && !geminiDedupedSet.has(`${c.index}:${c.subIndex}`))
 
-  if (candidates.length === 0) return [cts, emptySavings(false, detSaved, geminiReadDedupSaved)]
+  if (candidates.length === 0) return [cts, emptySavings(false, detSaved, geminiReadDedupSaved, gemDetMs)]
+
+  // Circuit breaker: skip AI compression entirely if backend is down
+  if (!circuitBreaker.shouldAllow()) {
+    console.log(`[squeezr] Circuit breaker open — skipping AI compression for ${candidates.length} block(s)`)
+    return [cts, emptySavings(false, detSaved, geminiReadDedupSaved, gemDetMs)]
+  }
 
   if (config.dryRun) {
     console.log(`[squeezr dry-run/gemini] Would AI-compress ${candidates.length} block(s) | potential -${candidates.reduce((s, c) => s + c.text.length, 0).toLocaleString()} chars`)
-    return [cts, emptySavings(true, detSaved, geminiReadDedupSaved)]
+    return [cts, emptySavings(true, detSaved, geminiReadDedupSaved, gemDetMs)]
   }
 
   const sessionHits: Array<{ index: number; subIndex: number; tool: string; block: SessionBlock }> = []
@@ -562,9 +598,11 @@ export async function compressGeminiContents(
     else if (aiEnabled()) toCompress.push(c)
   }
 
+  const gemAiT0 = Date.now()
   const freshlyCompressed = toCompress.length > 0
     ? await runCompression(toCompress, t => compressWithGeminiFlash(t, apiKey), config)
     : []
+  const gemAiMs = Date.now() - gemAiT0
 
   let totalOriginal = 0, totalCompressed = 0, totalOverhead = 0, totalAiSaved = 0
   const byTool: Savings['byTool'] = []
@@ -589,9 +627,9 @@ export async function compressGeminiContents(
 
   if (sessionHits.length > 0) console.log(`[squeezr/gemini] Session cache: ${sessionHits.length} block(s) reused`)
 
-  return [cts, { compressed: freshlyCompressed.length, savedChars: totalOriginal - totalCompressed, originalChars: totalOriginal, byTool, dryRun: false, sessionCacheHits: sessionHits.length, detSavedChars: detSaved, dedupSavedChars: geminiReadDedupSaved, aiSavedChars: totalAiSaved, overheadChars: totalOverhead }]
+  return [cts, { compressed: freshlyCompressed.length, savedChars: totalOriginal - totalCompressed, originalChars: totalOriginal, byTool, dryRun: false, sessionCacheHits: sessionHits.length, detSavedChars: detSaved, dedupSavedChars: geminiReadDedupSaved, aiSavedChars: totalAiSaved, overheadChars: totalOverhead, detMs: gemDetMs, aiMs: gemAiMs }]
 }
 
-function emptySavings(dryRun = false, detSavedChars = 0, dedupSavedChars = 0): Savings {
-  return { compressed: 0, savedChars: 0, originalChars: 0, byTool: [], dryRun, sessionCacheHits: 0, detSavedChars, dedupSavedChars, aiSavedChars: 0, overheadChars: 0 }
+export function emptySavings(dryRun = false, detSavedChars = 0, dedupSavedChars = 0, detMs = 0): Savings {
+  return { compressed: 0, savedChars: 0, originalChars: 0, byTool: [], dryRun, sessionCacheHits: 0, detSavedChars, dedupSavedChars, aiSavedChars: 0, overheadChars: 0, detMs, aiMs: 0 }
 }

@@ -207,6 +207,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: { type: 'object', properties: {}, required: [] },
     },
     {
+      name: 'squeezr_bypass',
+      description:
+        'Toggle bypass mode. When ON, all requests pass through uncompressed but are still logged. ' +
+        'Runtime-only — resets on proxy restart. Does not modify config files. ' +
+        'Use when you suspect Squeezr is affecting your results and need to verify.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          enabled: {
+            type: 'boolean',
+            description: 'true to enable bypass (disable compression), false to disable bypass. Omit to toggle.',
+          },
+        },
+        required: [],
+      },
+    },
+    {
       name: 'squeezr_set_project',
       description:
         'Set or change the current project name for Squeezr tracking. ' +
@@ -267,6 +284,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const mode = stats ? (stats.mode as string ?? 'normal') : 'normal'
     const dryRun = stats ? (stats.dry_run as boolean) : false
 
+    const bypassed = health.bypassed as boolean ?? false
+    const cb = health.circuit_breaker as { state?: string; total_trips?: number } | undefined
+    const cbState = cb?.state ?? 'closed'
+    const cbIcon = cbState === 'closed' ? '🟢' : cbState === 'half-open' ? '🟡' : '🔴'
+
     return appendUpdate({
       content: [{
         type: 'text',
@@ -274,7 +296,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           `✅ Squeezr v${health.version ?? '?'} is running`,
           `   Port    : ${BASE_URL}`,
           `   Uptime  : ${uptime}`,
-          `   Mode    : ${mode}${dryRun ? ' (dry-run)' : ''}`,
+          `   Mode    : ${mode}${dryRun ? ' (dry-run)' : ''}${bypassed ? ' ⏸️ BYPASS ON' : ''}`,
+          `   Circuit : ${cbIcon} ${cbState}${cb?.total_trips ? ` (${cb.total_trips} trip${cb.total_trips > 1 ? 's' : ''})` : ''}`,
           `   Dashboard: ${BASE_URL}/squeezr/dashboard`,
         ].join('\n'),
       }],
@@ -325,6 +348,22 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           `Uptime           : ${uptime}`,
           '',
           toolLines.length > 0 ? 'By tool:\n' + toolLines.join('\n') : 'No tool results compressed yet.',
+          '',
+          '── Latency ──',
+          (() => {
+            const lat = data.latency as { total?: { p50?: number; p95?: number; count?: number } } | undefined
+            if (!lat?.total?.count) return '   No latency data yet.'
+            const t = lat.total
+            return `   Compression: p50=${t.p50}ms  p95=${t.p95}ms  (${t.count} samples)`
+          })(),
+          '',
+          '── Expand Rate ──',
+          (() => {
+            const exp = data.expand as { calls?: number; rate_pct?: number } | undefined
+            if (!exp?.calls) return '   No expand calls yet (good — compression is keeping fidelity).'
+            const icon = (exp.rate_pct ?? 0) > 25 ? '🔴' : (exp.rate_pct ?? 0) > 10 ? '🟡' : '🟢'
+            return `   ${icon} ${exp.calls} expand calls (${exp.rate_pct}% of compressions)`
+          })(),
           '',
           '── Savings Breakdown ──',
           ,
@@ -606,6 +645,32 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         isError: true,
       }
     }
+  }
+
+  // ── squeezr_bypass ────────────────────────────────────────────────────────
+  if (name === 'squeezr_bypass') {
+    const body = args && typeof (args as Record<string, unknown>).enabled === 'boolean'
+      ? { enabled: (args as Record<string, unknown>).enabled }
+      : {}
+
+    const result = await proxyPost('/squeezr/bypass', body)
+
+    if (!result) {
+      return {
+        content: [{ type: 'text', text: '❌ Squeezr proxy is not running. Start with: squeezr start' }],
+        isError: false,
+      }
+    }
+
+    const bypassed = (result as { bypassed: boolean }).bypassed
+    return appendUpdate({
+      content: [{
+        type: 'text',
+        text: bypassed
+          ? '⏸️ Bypass mode ON — compression disabled.\n   Requests pass through uncompressed but are still logged.\n   Toggle off: squeezr_bypass({ enabled: false })'
+          : '▶️ Bypass mode OFF — compression active.\n   All requests are being compressed normally.',
+      }],
+    })
   }
 
   // ── squeezr_set_project ───────────────────────────────────────────────────

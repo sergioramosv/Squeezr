@@ -6,8 +6,10 @@ import { stream, streamSSE } from 'hono/streaming';
 import { config, applyMode, runtimeOverrides } from './config.js';
 import { Stats } from './stats.js';
 import { DASHBOARD_HTML } from './dashboard.js';
-import { getCache } from './compressor.js';
+import { getCache, emptySavings } from './compressor.js';
 import { compressAnthropicMessages, compressOpenAIMessages, compressGeminiContents, } from './compressor.js';
+import { isBypassed, setBypassed, toggleBypassed } from './bypass.js';
+import { circuitBreaker } from './circuitBreaker.js';
 import { injectExpandToolAnthropic, injectExpandToolOpenAI, handleAnthropicExpandCall, handleOpenAIExpandCall, retrieveOriginal, expandStoreSize, } from './expand.js';
 import { compressSystemPrompt } from './systemPrompt.js';
 import { sessionCacheSize } from './sessionCache.js';
@@ -154,6 +156,44 @@ app.post('/v1/messages', async (c) => {
         ?? '';
     // Extract project name BEFORE compressing system prompt (compression destroys <cwd> tags)
     const project = extractProjectName(body);
+    const messages = (body.messages ?? []);
+    const originalChars = estimateChars(messages);
+    // Bypass mode: skip all compression, still record request stats
+    if (isBypassed()) {
+        stats.recordWithProject(project, originalChars, originalChars, emptySavings());
+        recordRequest(project, 0, 0, []);
+        storeKey('anthropic', apiKey);
+        const fwdHeaders = forwardHeaders(c.req.raw.headers);
+        if (body.stream) {
+            const upstream = await proxyStream(`${ANTHROPIC_API}/v1/messages`, body, fwdHeaders);
+            updateAnthropicFromHeaders(upstream.headers);
+            return stream(c, async (s) => {
+                const reader = upstream.body.getReader();
+                const decoder = new TextDecoder();
+                const sseParser = makeSseUsageParser('anthropic', (inp, out) => addAnthropicUsage(inp, out));
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done)
+                        break;
+                    await s.write(value);
+                    sseParser(decoder.decode(value, { stream: true }));
+                }
+            });
+        }
+        const resp = await fetch(`${ANTHROPIC_API}/v1/messages`, {
+            method: 'POST',
+            headers: { ...fwdHeaders, 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        updateAnthropicFromHeaders(resp.headers);
+        const respBody = await resp.json();
+        const respHeaders = {};
+        for (const [k, v] of resp.headers.entries()) {
+            if (!SKIP_RESP_HEADERS.has(k.toLowerCase()))
+                respHeaders[k] = v;
+        }
+        return c.json(respBody, resp.status, respHeaders);
+    }
     // System prompt compression (handles both string and array formats — Claude Code sends array)
     if (config.compressSystemPrompt && !config.dryRun) {
         if (typeof body.system === 'string') {
@@ -171,18 +211,18 @@ app.post('/v1/messages', async (c) => {
             }
         }
     }
-    const messages = (body.messages ?? []);
-    const originalChars = estimateChars(messages);
     const systemExtraChars = typeof body.system === 'string'
         ? body.system.length
         : Array.isArray(body.system)
             ? body.system.reduce((s, b) => s + (b.text?.length ?? 0), 0)
             : 0;
+    const compT0 = Date.now();
     const [compressedMsgs, savings] = await compressAnthropicMessages(messages, apiKey, config, systemExtraChars);
+    const compLatency = { totalMs: Date.now() - compT0, detMs: savings.detMs, aiMs: savings.aiMs };
     body.messages = compressedMsgs;
     // Inject expand tool
     injectExpandToolAnthropic(body);
-    stats.recordWithProject(project, originalChars, estimateChars(compressedMsgs), savings);
+    stats.recordWithProject(project, originalChars, estimateChars(compressedMsgs), savings, compLatency);
     recordRequest(project, savings.savedChars, savings.compressed, savings.byTool);
     storeKey('anthropic', apiKey);
     const fwdHeaders = forwardHeaders(c.req.raw.headers);
@@ -215,9 +255,10 @@ app.post('/v1/messages', async (c) => {
         const u = respBody.usage;
         addAnthropicUsage(u.input_tokens ?? 0, u.output_tokens ?? 0);
     }
-    // Handle expand() call if model requested one
+    // Handle expand() call if model requested one (track expand rate)
     const expandCall = handleAnthropicExpandCall(respBody);
     if (expandCall) {
+        stats.recordExpand(true);
         const { toolUseId, original } = expandCall;
         const continueMessages = [
             ...body.messages,
@@ -252,6 +293,47 @@ app.post('/v1/chat/completions', async (c) => {
     // Extract project name BEFORE compressing system prompt
     const oaiProject = extractProjectName(body);
     const messages = (body.messages ?? []);
+    const originalChars = estimateChars(messages);
+    // Bypass mode: skip all compression, still record request stats
+    if (isBypassed()) {
+        stats.recordWithProject(oaiProject, originalChars, originalChars, emptySavings());
+        recordRequest(oaiProject, 0, 0, []);
+        if (!isLocal)
+            storeKey('openai', openAIKey);
+        const fwdHeaders = forwardHeaders(c.req.raw.headers);
+        if (body.stream) {
+            const resp = await fetch(upstream, {
+                method: 'POST',
+                headers: { ...fwdHeaders, 'content-type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            if (!isLocal)
+                updateOpenAIFromHeaders(resp.headers);
+            return stream(c, async (s) => {
+                const reader = resp.body.getReader();
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done)
+                        break;
+                    await s.write(value);
+                }
+            });
+        }
+        const resp = await fetch(upstream, {
+            method: 'POST',
+            headers: { ...fwdHeaders, 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!isLocal)
+            updateOpenAIFromHeaders(resp.headers);
+        const respBody = await resp.json();
+        const respHeaders = {};
+        for (const [k, v] of resp.headers.entries()) {
+            if (!SKIP_RESP_HEADERS.has(k.toLowerCase()))
+                respHeaders[k] = v;
+        }
+        return c.json(respBody, resp.status, respHeaders);
+    }
     // Compress system message for non-local
     if (!isLocal && config.compressSystemPrompt && !config.dryRun) {
         const msgs = messages;
@@ -261,12 +343,13 @@ app.post('/v1/chat/completions', async (c) => {
             stats.recordSystemPromptSaved(sp.originalLen, sp.compressedLen);
         }
     }
-    const originalChars = estimateChars(messages);
+    const oaiCompT0 = Date.now();
     const [compressedMsgs, savings] = await compressOpenAIMessages(messages, openAIKey, config, isLocal);
+    const oaiCompLatency = { totalMs: Date.now() - oaiCompT0, detMs: savings.detMs, aiMs: savings.aiMs };
     body.messages = compressedMsgs;
     if (!isLocal)
         injectExpandToolOpenAI(body);
-    stats.recordWithProject(oaiProject, originalChars, estimateChars(compressedMsgs), savings);
+    stats.recordWithProject(oaiProject, originalChars, estimateChars(compressedMsgs), savings, oaiCompLatency);
     recordRequest(oaiProject, savings.savedChars, savings.compressed, savings.byTool);
     if (!isLocal)
         storeKey('openai', openAIKey);
@@ -311,6 +394,7 @@ app.post('/v1/chat/completions', async (c) => {
     }
     const expandCall = !isLocal ? handleOpenAIExpandCall(respBody) : null;
     if (expandCall) {
+        stats.recordExpand(true);
         const { toolCallId, original } = expandCall;
         const continueMessages = [
             ...body.messages,
@@ -340,10 +424,32 @@ app.post('/v1beta/models/*', async (c) => {
     const modelPath = c.req.path.replace('/v1beta/models/', '');
     const contents = (body.contents ?? []);
     const originalChars = estimateChars(contents);
-    const [compressedContents, savings] = await compressGeminiContents(contents, googleKey, config);
-    body.contents = compressedContents;
     const geminiProject = extractProjectName(body);
-    stats.recordWithProject(geminiProject, originalChars, estimateChars(compressedContents), savings);
+    // Bypass mode: skip all compression, still record request stats
+    if (isBypassed()) {
+        stats.recordWithProject(geminiProject, originalChars, originalChars, emptySavings());
+        recordRequest(geminiProject, 0, 0, []);
+        const targetUrl = `${GOOGLE_API}/v1beta/models/${modelPath}`;
+        const fwdHeaders = forwardHeaders(c.req.raw.headers);
+        const params = url.searchParams;
+        const paramStr = params.toString();
+        const resp = await fetch(paramStr ? `${targetUrl}?${paramStr}` : targetUrl, {
+            method: 'POST',
+            headers: { ...fwdHeaders, 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const respHeaders = {};
+        for (const [k, v] of resp.headers.entries()) {
+            if (!SKIP_RESP_HEADERS.has(k.toLowerCase()))
+                respHeaders[k] = v;
+        }
+        return c.body(await resp.arrayBuffer(), resp.status, respHeaders);
+    }
+    const gemCompT0 = Date.now();
+    const [compressedContents, savings] = await compressGeminiContents(contents, googleKey, config);
+    const gemCompLatency = { totalMs: Date.now() - gemCompT0, detMs: savings.detMs, aiMs: savings.aiMs };
+    body.contents = compressedContents;
+    stats.recordWithProject(geminiProject, originalChars, estimateChars(compressedContents), savings, gemCompLatency);
     recordRequest(geminiProject, savings.savedChars, savings.compressed, savings.byTool);
     const targetUrl = `${GOOGLE_API}/v1beta/models/${modelPath}`;
     const fwdHeaders = forwardHeaders(c.req.raw.headers);
@@ -413,13 +519,39 @@ async function buildStatsPayload() {
         port: config.port,
         mode: runtimeOverrides.mode,
         limits: limitsSnapshot(),
+        bypassed: isBypassed(),
+        circuit_breaker: circuitBreaker.snapshot(),
     };
 }
 app.get('/squeezr/stats', (c) => {
     return buildStatsPayload().then(d => c.json(d));
 });
 app.get('/squeezr/health', (c) => {
-    return c.json({ status: 'ok', version: VERSION });
+    const cb = circuitBreaker.snapshot();
+    const s = stats.summary();
+    return c.json({
+        status: 'ok',
+        version: VERSION,
+        uptime_seconds: s.uptime_seconds,
+        mode: runtimeOverrides.mode,
+        bypassed: isBypassed(),
+        circuit_breaker: {
+            state: cb.state,
+            consecutive_failures: cb.consecutive_failures,
+            total_trips: cb.total_trips,
+            last_success_ago_s: cb.last_success_time
+                ? Math.round((Date.now() - cb.last_success_time) / 1000)
+                : null,
+        },
+        expand_store: {
+            size: expandStoreSize(),
+            pressure: expandStoreSize() > 5000 ? 'high' : expandStoreSize() > 1000 ? 'medium' : 'low',
+        },
+        compression: {
+            requests: s.requests,
+            savings_pct: s.savings_pct,
+        },
+    });
 });
 // ── Project management ─────────────────────────────────────────────────────
 app.get('/squeezr/project', (c) => {
@@ -441,6 +573,7 @@ app.post('/squeezr/project', async (c) => {
 app.get('/squeezr/expand/:id', (c) => {
     const id = c.req.param('id');
     const original = retrieveOriginal(id);
+    stats.recordExpand(!!original);
     if (!original)
         return c.json({ error: 'Not found or expired' }, 404);
     return c.json({ id, content: original });
@@ -489,6 +622,25 @@ app.post('/squeezr/config', async (c) => {
         applyMode(body.mode);
     }
     return c.json({ ok: true, mode: runtimeOverrides.mode });
+});
+// ── Bypass mode (runtime-only compression toggle) ────────────────────────────
+app.get('/squeezr/bypass', (c) => {
+    return c.json({ bypassed: isBypassed() });
+});
+app.post('/squeezr/bypass', async (c) => {
+    try {
+        const body = await c.req.json().catch(() => ({}));
+        if (typeof body.enabled === 'boolean') {
+            setBypassed(body.enabled);
+        }
+        else {
+            toggleBypassed();
+        }
+    }
+    catch {
+        toggleBypassed();
+    }
+    return c.json({ bypassed: isBypassed() });
 });
 // ── OAuth token refresh proxy (Codex: set CODEX_REFRESH_TOKEN_URL_OVERRIDE=http://localhost:PORT/oauth/token) ──
 app.post('/oauth/token', async (c) => {

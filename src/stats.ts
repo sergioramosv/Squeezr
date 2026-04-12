@@ -8,6 +8,45 @@ const CHARS_PER_TOKEN = 3.5
 
 interface ToolData { count: number; savedChars: number; originalChars: number }
 
+export interface LatencyInfo {
+  totalMs: number
+  detMs?: number
+  aiMs?: number
+}
+
+// ── Latency tracker (rolling percentile window) ──────────────────────────────
+
+class LatencyTracker {
+  private window: number[] = []
+  constructor(private readonly maxSize = 200) {}
+
+  record(ms: number): void {
+    this.window.push(ms)
+    if (this.window.length > this.maxSize) this.window.shift()
+  }
+
+  private percentile(p: number): number {
+    if (this.window.length === 0) return 0
+    const sorted = [...this.window].sort((a, b) => a - b)
+    const idx = Math.ceil((p / 100) * sorted.length) - 1
+    return sorted[Math.max(0, idx)]
+  }
+
+  summary(): { count: number; p50: number; p95: number; p99: number; avg: number; last: number } {
+    const n = this.window.length
+    if (n === 0) return { count: 0, p50: 0, p95: 0, p99: 0, avg: 0, last: 0 }
+    const avg = Math.round(this.window.reduce((a, b) => a + b, 0) / n)
+    return {
+      count: n,
+      p50: this.percentile(50),
+      p95: this.percentile(95),
+      p99: this.percentile(99),
+      avg,
+      last: this.window[n - 1],
+    }
+  }
+}
+
 export class Stats {
   private requests = 0
   private totalOriginalChars = 0
@@ -31,7 +70,17 @@ export class Stats {
   private totalSyspromptSaved = 0
   private totalAiCompressionCalls = 0
 
-  record(originalChars: number, compressedChars: number, savings: Savings): void {
+  // Latency tracking (rolling percentile windows)
+  private latencyTotal = new LatencyTracker()
+  private latencyDet = new LatencyTracker()
+  private latencyAi = new LatencyTracker()
+
+  // Expand rate tracking — THE quality metric for compression
+  private expandCalls = 0
+  private expandHits = 0
+  private expandMisses = 0
+
+  record(originalChars: number, compressedChars: number, savings: Savings, latency?: LatencyInfo): void {
     this.requests++
     this.totalOriginalChars += originalChars
     this.totalCompressedChars += compressedChars
@@ -46,6 +95,13 @@ export class Stats {
     this.totalAiSaved += savings.aiSavedChars ?? 0
     this.totalOverheadChars += savings.overheadChars ?? 0
     this.totalAiCompressionCalls += savings.compressed
+
+    // Latency tracking
+    if (latency) {
+      this.latencyTotal.record(latency.totalMs)
+      if (latency.detMs != null) this.latencyDet.record(latency.detMs)
+      if (latency.aiMs != null) this.latencyAi.record(latency.aiMs)
+    }
 
     for (const entry of savings.byTool) {
       if (!this.byTool[entry.tool]) this.byTool[entry.tool] = { count: 0, savedChars: 0, originalChars: 0 }
@@ -70,9 +126,9 @@ export class Stats {
   }
 
   /** Call instead of record() when a project name is known. */
-  recordWithProject(project: string, originalChars: number, compressedChars: number, savings: Savings): void {
+  recordWithProject(project: string, originalChars: number, compressedChars: number, savings: Savings, latency?: LatencyInfo): void {
     if (project !== 'unknown') this.currentProject = project
-    this.record(originalChars, compressedChars, savings)
+    this.record(originalChars, compressedChars, savings, latency)
 
     // Per-project session totals
     const p = this.currentProject
@@ -85,6 +141,13 @@ export class Stats {
 
   setProject(project: string): void {
     if (project !== 'unknown') this.currentProject = project
+  }
+
+  /** Track an expand call — the key quality metric for compression. */
+  recordExpand(found: boolean): void {
+    this.expandCalls++
+    if (found) this.expandHits++
+    else this.expandMisses++
   }
 
   currentProjectName(): string {
@@ -124,6 +187,21 @@ export class Stats {
         system_prompt: this.totalSyspromptSaved,
         overhead: this.totalOverheadChars,
         ai_calls: this.totalAiCompressionCalls,
+      },
+      // Latency percentiles (ms) for compression timing
+      latency: {
+        total: this.latencyTotal.summary(),
+        deterministic: this.latencyDet.summary(),
+        ai: this.latencyAi.summary(),
+      },
+      // Expand rate — key quality metric (high = compression too aggressive)
+      expand: {
+        calls: this.expandCalls,
+        hits: this.expandHits,
+        misses: this.expandMisses,
+        rate_pct: this.totalCompressions > 0
+          ? Math.round((this.expandCalls / this.totalCompressions) * 1000) / 10
+          : 0,
       },
     }
   }

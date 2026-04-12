@@ -203,6 +203,9 @@ Usage:
   squeezr mcp uninstall    Remove Squeezr MCP registration
   squeezr ports            Change HTTP and MITM proxy ports
   squeezr tunnel           Expose proxy via Cloudflare Tunnel for Cursor IDE
+  squeezr bypass           Toggle bypass mode (skip compression, keep logging)
+  squeezr bypass --on      Enable bypass (disable compression)
+  squeezr bypass --off     Disable bypass (resume compression)
   squeezr update           Kill old processes, install latest from npm, restart
   squeezr uninstall        Remove Squeezr completely (env vars, CA, auto-start, logs)
   squeezr version          Print version
@@ -383,6 +386,18 @@ async function checkStatus() {
           console.log(`  HTTP proxy (Claude/Aider/Gemini): http://localhost:${port}`)
           console.log(`  MITM proxy (Codex):               http://localhost:${mitmPort}`)
           console.log(`  Dashboard:                        http://localhost:${port}/squeezr/dashboard`)
+          if (json.mode) console.log(`  Mode:     ${json.mode}`)
+          if (json.uptime_seconds != null) {
+            const s = json.uptime_seconds
+            const fmt = s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s/60)}m ${s%60}s` : `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`
+            console.log(`  Uptime:   ${fmt}`)
+          }
+          if (json.bypassed) console.log(`  ⚠ Bypass mode is ON (compression disabled)`)
+          if (json.circuit_breaker) {
+            const cb = json.circuit_breaker
+            const icons = { closed: '🟢 OK', open: '🔴 OPEN', 'half-open': '🟡 PROBING' }
+            console.log(`  Circuit:  ${icons[cb.state] || cb.state}${cb.total_trips ? ` (${cb.total_trips} trip${cb.total_trips > 1 ? 's' : ''})` : ''}`)
+          }
         } catch {
           console.log(`Squeezr is running on port ${port}`)
         }
@@ -1530,6 +1545,33 @@ switch (command) {
 
   case 'tunnel':
     await startTunnel()
+    break
+
+  case 'bypass':
+    await (async () => {
+      const port = getPort()
+      const body = args[1] === '--on' ? JSON.stringify({ enabled: true })
+        : args[1] === '--off' ? JSON.stringify({ enabled: false })
+        : '{}'
+      try {
+        const res = await fetch(`http://localhost:${port}/squeezr/bypass`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body,
+        })
+        const json = await res.json()
+        if (json.bypassed) {
+          console.log('⏸️  Bypass mode ON — compression disabled')
+          console.log('   Requests pass through uncompressed but are still logged.')
+          console.log('   Turn off: squeezr bypass --off')
+        } else {
+          console.log('▶️  Bypass mode OFF — compression active')
+        }
+      } catch {
+        console.log('Squeezr is NOT running')
+        console.log('Start it with: squeezr start')
+      }
+    })()
     break
 
   case 'uninstall':
