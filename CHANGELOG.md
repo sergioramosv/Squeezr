@@ -2,6 +2,23 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [Unreleased]
+### Added
+- **Port-conflict diagnostics** — On startup, Squeezr now classifies the configured port as `free`, `squeezr` (existing instance), or `foreign` (an unrelated HTTP service). When a foreign service is detected (e.g. a Docker container squatting on 8080), Squeezr prints an explicit warning that names the conflict and reminds the user that their shell env vars likely still point to the wrong port. This prevents Claude Code from silently routing API calls into Apache/WordPress/etc., which produced cryptic errors like `undefined is not an object (evaluating '$.speed')`.
+- **Post-start self-test** — After a successful `listen()`, Squeezr runs four async checks that never block accepting requests:
+  - `loopback_health` — verifies the bound port answers `/squeezr/health` with the expected `identity`/`version`.
+  - `env_coherence` — checks that `ANTHROPIC_BASE_URL`, `openai_base_url` and `GEMINI_API_BASE_URL` actually point to the bound port; if they drifted (because `findFreePort` picked a different port than the one in `squeezr.toml`), it prints the exact `export` lines to fix it.
+  - `upstream_reachable` — DNS + TLS handshake to `api.anthropic.com` (no payload, no quota cost).
+  - `pipeline_dryrun` — sends a minimal Anthropic-format request with the new `X-Squeezr-DryRun: 1` header, exercising the full compression path without forwarding to upstream.
+  - Results are exposed at `GET /squeezr/selftest` and printed at startup.
+- **Health endpoint identity field** — `GET /squeezr/health` now includes `"identity": "squeezr"`, so external callers (shell wrappers, auto-heal scripts, CI checks) can distinguish a real Squeezr instance from any other HTTP service that happens to answer 200.
+- **Runtime info file** — Squeezr writes its actual bound port + PID to `~/.squeezr/runtime.json` on startup and clears it on shutdown. The shell wrapper and `squeezr status` read this file so they always know the real port, even when `findFreePort` drifted.
+
+### Fixed
+- **Auto-heal in `setupUnix` / `setupWSL` / `squeezr ports`** — The shell-profile auto-heal previously used `curl -sf …/squeezr/health`, which does not fail on 3xx responses. A foreign service replying with `301` (e.g. WordPress redirecting `/squeezr/health` → `/squeezr/health/`) was therefore mistaken for a healthy Squeezr, and the auto-heal never restarted the proxy. The block now uses an `_squeezr_alive` helper that grep-matches `"identity":"squeezr"` in the body.
+- **`squeezr start` version detection** — `startDaemon()` previously caught a `JSON.parse('')` error, returned the string `'unknown'`, and entered a "version mismatch → restart" loop against the foreign service. It now uses the same `identity` validation, so a foreign service is correctly reported instead of triggering a restart attempt that cannot succeed.
+- **`squeezr status`** — When the configured port is occupied by a foreign service, the command now reports it explicitly (with the foreign `Server` header) instead of saying "Squeezr is NOT running".
+
 ## [1.22.0] - 2026-04-10
 ### Added
 - **Resilience: Circuit breaker for AI compression** — After 3 consecutive AI compression failures (Haiku/GPT-4o-mini/Gemini Flash), Squeezr automatically skips AI compression for 60s, then probes recovery. Prevents hammering a down backend. State visible in dashboard, MCP `squeezr_status`, and `squeezr status` CLI.

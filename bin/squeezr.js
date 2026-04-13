@@ -74,9 +74,20 @@ function getPortFromToml() {
   return null
 }
 
+// Runtime info written by src/index.ts after a successful listen(). Reflects
+// the *actual* bound port, which may differ from squeezr.toml when findFreePort
+// drifted because the configured port was occupied.
+const RUNTIME_FILE = path.join(os.homedir(), '.squeezr', 'runtime.json')
+
+function readRuntimeInfo() {
+  try { return JSON.parse(fs.readFileSync(RUNTIME_FILE, 'utf-8')) } catch { return null }
+}
+
 function getMitmPort(port) {
   const envMitm = process.env.SQUEEZR_MITM_PORT
   if (envMitm) return parseInt(envMitm)
+  const runtime = readRuntimeInfo()
+  if (runtime && runtime.mitmPort) return runtime.mitmPort
   try {
     const toml = fs.readFileSync(path.join(ROOT, 'squeezr.toml'), 'utf-8')
     const m = toml.match(/^mitm_port\s*=\s*(\d+)/m)
@@ -86,7 +97,35 @@ function getMitmPort(port) {
 }
 
 function getPort() {
-  return process.env.SQUEEZR_PORT || getPortFromToml() || 8080
+  if (process.env.SQUEEZR_PORT) return parseInt(process.env.SQUEEZR_PORT)
+  const runtime = readRuntimeInfo()
+  if (runtime && runtime.port) return runtime.port
+  return getPortFromToml() || 8080
+}
+
+/**
+ * Verifies that whatever is listening on `port` is actually a squeezr instance
+ * (by checking the magic `identity` field in /squeezr/health), not an unrelated
+ * HTTP service that happens to answer 200. Returns the parsed health JSON, or
+ * null if the port is free, unreachable, or owned by a foreign service.
+ */
+function probeSqueezr(port, timeoutMs = 1500) {
+  return new Promise(resolve => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/squeezr/health' }, res => {
+      let data = ''
+      res.on('data', chunk => { data += chunk })
+      res.on('end', () => {
+        if (res.statusCode !== 200) return resolve(null)
+        try {
+          const json = JSON.parse(data)
+          if (json && json.identity === 'squeezr') return resolve(json)
+        } catch {}
+        resolve(null)
+      })
+    })
+    req.on('error', () => resolve(null))
+    req.setTimeout(timeoutMs, () => { req.destroy(); resolve(null) })
+  })
 }
 
 /**
@@ -232,19 +271,12 @@ async function startDaemon() {
     process.exit(1)
   }
 
-  // Check if already running — and if the version matches
+  // Check if already running — and if the version matches. We use probeSqueezr
+  // (which validates the `identity` field) so we don't mistake an unrelated
+  // HTTP service squatting on this port for a real squeezr instance.
   const port = getPort()
-  const runningVersion = await new Promise(resolve => {
-    const req = http.get(`http://localhost:${port}/squeezr/health`, res => {
-      let data = ''
-      res.on('data', chunk => { data += chunk })
-      res.on('end', () => {
-        try { resolve(JSON.parse(data).version) } catch { resolve('unknown') }
-      })
-    })
-    req.on('error', () => resolve(null))
-    req.setTimeout(2000, () => { req.destroy(); resolve(null) })
-  })
+  const running = await probeSqueezr(port)
+  const runningVersion = running ? running.version : null
   if (runningVersion) {
     if (runningVersion === pkg.version) {
       const mitmPort = getMitmPort(port)
@@ -375,45 +407,45 @@ function stopProxy() {
 async function checkStatus() {
   const port = getPort()
   const mitmPort = getMitmPort(port)
-  return new Promise(resolve => {
-    const req = http.get(`http://localhost:${port}/squeezr/health`, res => {
-      let data = ''
-      res.on('data', chunk => { data += chunk })
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data)
-          console.log(`Squeezr is running  (v${json.version})`)
-          console.log(`  HTTP proxy (Claude/Aider/Gemini): http://localhost:${port}`)
-          console.log(`  MITM proxy (Codex):               http://localhost:${mitmPort}`)
-          console.log(`  Dashboard:                        http://localhost:${port}/squeezr/dashboard`)
-          if (json.mode) console.log(`  Mode:     ${json.mode}`)
-          if (json.uptime_seconds != null) {
-            const s = json.uptime_seconds
-            const fmt = s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s/60)}m ${s%60}s` : `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`
-            console.log(`  Uptime:   ${fmt}`)
-          }
-          if (json.bypassed) console.log(`  ⚠ Bypass mode is ON (compression disabled)`)
-          if (json.circuit_breaker) {
-            const cb = json.circuit_breaker
-            const icons = { closed: '🟢 OK', open: '🔴 OPEN', 'half-open': '🟡 PROBING' }
-            console.log(`  Circuit:  ${icons[cb.state] || cb.state}${cb.total_trips ? ` (${cb.total_trips} trip${cb.total_trips > 1 ? 's' : ''})` : ''}`)
-          }
-        } catch {
-          console.log(`Squeezr is running on port ${port}`)
-        }
-        resolve(true)
+  const json = await probeSqueezr(port, 2000)
+  if (!json) {
+    // Distinguish "nothing here" from "something foreign here" so the user gets
+    // an actionable error instead of a misleading "not running".
+    const occupied = await new Promise(resolve => {
+      const req = http.get(`http://localhost:${port}/`, res => {
+        resolve({ status: res.statusCode, server: res.headers.server })
+        res.resume()
       })
+      req.on('error', () => resolve(null))
+      req.setTimeout(1500, () => { req.destroy(); resolve(null) })
     })
-    req.on('error', () => {
+    if (occupied) {
+      console.log(`Squeezr is NOT running on port ${port}, but a foreign service is.`)
+      console.log(`  Foreign response: HTTP ${occupied.status}${occupied.server ? ` (Server: ${occupied.server})` : ''}`)
+      console.log(`  Stop it or change squeezr.toml port, then run: squeezr start`)
+    } else {
       console.log(`Squeezr is NOT running`)
       console.log('Start it with: squeezr start')
-      resolve(false)
-    })
-    req.setTimeout(2000, () => {
-      req.destroy()
-      resolve(false)
-    })
-  })
+    }
+    return false
+  }
+  console.log(`Squeezr is running  (v${json.version})`)
+  console.log(`  HTTP proxy (Claude/Aider/Gemini): http://localhost:${port}`)
+  console.log(`  MITM proxy (Codex):               http://localhost:${mitmPort}`)
+  console.log(`  Dashboard:                        http://localhost:${port}/squeezr/dashboard`)
+  if (json.mode) console.log(`  Mode:     ${json.mode}`)
+  if (json.uptime_seconds != null) {
+    const s = json.uptime_seconds
+    const fmt = s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s/60)}m ${s%60}s` : `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`
+    console.log(`  Uptime:   ${fmt}`)
+  }
+  if (json.bypassed) console.log(`  ⚠ Bypass mode is ON (compression disabled)`)
+  if (json.circuit_breaker) {
+    const cb = json.circuit_breaker
+    const icons = { closed: '🟢 OK', open: '🔴 OPEN', 'half-open': '🟡 PROBING' }
+    console.log(`  Circuit:  ${icons[cb.state] || cb.state}${cb.total_trips ? ` (${cb.total_trips} trip${cb.total_trips > 1 ? 's' : ''})` : ''}`)
+  }
+  return true
 }
 
 function showConfig() {
@@ -605,8 +637,8 @@ async function configurePorts() {
         if (content.includes('# squeezr env vars')) {
           // Replace existing block (from marker to the closing fi)
           content = content.replace(
-            /# squeezr env vars[\s\S]*?fi/,
-            `# squeezr env vars\n${envBlock}\n# squeezr auto-heal\nif ! curl -sf http://localhost:${finalPort}/squeezr/health > /dev/null 2>&1; then squeezr start > /dev/null 2>&1; fi`
+            /# squeezr env vars[\s\S]*?(?:fi|unset -f _squeezr_alive)/,
+            `# squeezr env vars\n${envBlock}\n# squeezr auto-heal (validates identity, not just HTTP 200)\n_squeezr_alive() {\n  curl -sf --max-time 2 "http://localhost:${finalPort}/squeezr/health" 2>/dev/null | grep -q '"identity":"squeezr"'\n}\nif ! _squeezr_alive; then squeezr start > /dev/null 2>&1; fi\nunset -f _squeezr_alive`
           )
           fs.writeFileSync(p, content)
           console.log(`  [ok] Updated ${p}`)
@@ -973,6 +1005,13 @@ function setupUnix() {
   const port = getPort()
   const mitmPort = getMitmPort(port)
   const bundlePath = path.join(os.homedir(), '.squeezr', 'mitm-ca', 'bundle.crt')
+  // The auto-heal validates that whatever answers on the configured port is
+  // actually squeezr (by checking the magic `identity` field). A bare
+  // `curl -sf .../squeezr/health` is NOT enough because curl returns success on
+  // 3xx redirects, so a foreign service (e.g. an Apache+WordPress container on
+  // 8080) would be mistaken for a healthy squeezr — and Claude Code would then
+  // route its API requests into the wrong service, producing cryptic errors
+  // like `undefined is not an object (evaluating '$.speed')`.
   const shellBlock = [
     `# squeezr env vars`,
     `export ANTHROPIC_BASE_URL=http://localhost:${port}`,
@@ -982,11 +1021,15 @@ function setupUnix() {
     `# NOTE: HTTPS_PROXY is intentionally NOT set globally — it would route ALL HTTPS`,
     `# (including Claude Code) through the MITM proxy and cause 502 errors.`,
     `# For Codex, set it per-session only: HTTPS_PROXY=http://localhost:${mitmPort} codex`,
-    `# squeezr auto-heal: start proxy if not running`,
-    `if ! curl -sf http://localhost:${port}/squeezr/health >/dev/null 2>&1; then`,
+    `# squeezr auto-heal: start proxy if not running (validates identity, not just HTTP 200)`,
+    `_squeezr_alive() {`,
+    `  curl -sf --max-time 2 "http://localhost:${port}/squeezr/health" 2>/dev/null | grep -q '"identity":"squeezr"'`,
+    `}`,
+    `if ! _squeezr_alive; then`,
     `  nohup ${nodeExe} ${distIndex} >> "${os.homedir()}/.squeezr/squeezr.log" 2>&1 &`,
     `  disown`,
     `fi`,
+    `unset -f _squeezr_alive`,
   ].join('\n')
   const marker = '# squeezr env vars'
 
@@ -1159,11 +1202,15 @@ function setupWSL() {
     `export NODE_EXTRA_CA_CERTS=${bundlePath}`,
     `# NOTE: HTTPS_PROXY is intentionally NOT set globally — set per-session for Codex only:`,
     `# HTTPS_PROXY=http://localhost:${mitmPort} codex`,
-    `# squeezr auto-heal: start proxy if not running`,
-    `if ! curl -sf http://localhost:${port}/squeezr/health >/dev/null 2>&1; then`,
+    `# squeezr auto-heal: start proxy if not running (validates identity, not just HTTP 200)`,
+    `_squeezr_alive() {`,
+    `  curl -sf --max-time 2 "http://localhost:${port}/squeezr/health" 2>/dev/null | grep -q '"identity":"squeezr"'`,
+    `}`,
+    `if ! _squeezr_alive; then`,
     `  nohup ${nodeExe} ${distIndex} >> "${os.homedir()}/.squeezr/squeezr.log" 2>&1 &`,
     `  disown`,
     `fi`,
+    `unset -f _squeezr_alive`,
   ].join('\n')
   const marker = '# squeezr env vars'
 

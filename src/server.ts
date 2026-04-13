@@ -202,6 +202,23 @@ app.post('/v1/messages', async (c) => {
   const messages = (body.messages ?? []) as unknown[]
   const originalChars = estimateChars(messages)
 
+  // Dry-run mode: exercises the compression pipeline but does NOT forward to
+  // upstream. Used by the post-start self-test to verify the request path is
+  // wired correctly without consuming any API quota.
+  if (c.req.header('x-squeezr-dryrun') === '1') {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [dryMessages, savings] = await compressAnthropicMessages(messages as any, apiKey, config)
+    const compressedChars = estimateChars(dryMessages as unknown[])
+    return c.json({
+      identity: 'squeezr',
+      dry_run: true,
+      original_chars: originalChars,
+      compressed_chars: compressedChars,
+      saved_chars: Math.max(0, originalChars - compressedChars),
+      savings,
+    })
+  }
+
   // Bypass mode: skip all compression, still record request stats
   if (isBypassed()) {
     stats.recordWithProject(project, originalChars, originalChars, emptySavings())
@@ -600,6 +617,10 @@ app.get('/squeezr/health', (c) => {
   const cb = circuitBreaker.snapshot()
   const s = stats.summary()
   return c.json({
+    // Magic identifier so callers can distinguish a real squeezr instance from
+    // any other HTTP service that happens to answer 200 on this port (e.g. a
+    // Docker container occupying the configured port).
+    identity: 'squeezr',
     status: 'ok',
     version: VERSION,
     uptime_seconds: s.uptime_seconds,
@@ -622,6 +643,27 @@ app.get('/squeezr/health', (c) => {
       savings_pct: s.savings_pct,
     },
   })
+})
+
+// ── Self-test endpoint ─────────────────────────────────────────────────────
+// Last self-test results are populated by src/selfTest.ts at startup and on
+// demand via GET /squeezr/selftest?run=1.
+
+let lastSelfTest: unknown = null
+export function setLastSelfTest(result: unknown): void {
+  lastSelfTest = result
+}
+
+app.get('/squeezr/selftest', async (c) => {
+  if (c.req.query('run') === '1') {
+    const { runSelfTest } = await import('./selfTest.js')
+    const result = await runSelfTest({ port: Number(c.req.query('port')) || 0 })
+    return c.json(result)
+  }
+  if (!lastSelfTest) {
+    return c.json({ status: 'not_run', message: 'Self-test has not been executed yet. Call ?run=1 to execute.' })
+  }
+  return c.json(lastSelfTest)
 })
 
 // ── Project management ─────────────────────────────────────────────────────

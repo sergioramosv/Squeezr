@@ -284,6 +284,30 @@ Squeezr uses cheap/free models for AI compression (the deterministic layer is pu
 - For Codex MITM: set `HTTPS_PROXY=http://localhost:8081` in the terminal where you run Codex (not set globally to avoid interfering with other tools)
 - For local compression: [Ollama](https://ollama.ai) with `qwen2.5-coder:1.5b`
 
+## Troubleshooting
+
+### Claude Code throws `undefined is not an object (evaluating '$.speed')`
+
+Symptom: every prompt in Claude Code immediately errors with `undefined is not an object (evaluating '$.speed')` (or similar `$.X` parse errors). This means Claude Code is sending its API requests to **something that is not Squeezr** but happens to occupy Squeezr's port — typically a Docker container (Apache, nginx, WordPress) bound to `8080`.
+
+To diagnose, run:
+
+```bash
+squeezr status
+```
+
+If the output says `a foreign service is` listening on the port, you have three options:
+
+1. **Move Squeezr to a different port** (recommended): `squeezr ports` and pick something free, then reopen your terminal.
+2. **Stop the offending service**: `docker ps` to find what owns 8080, then `docker stop <id>`.
+3. **Inspect runtime info**: `cat ~/.squeezr/runtime.json` shows the *actual* port Squeezr is bound to. If it differs from your `ANTHROPIC_BASE_URL`, run `squeezr setup` to refresh your shell profile.
+
+Squeezr v1.23.0+ runs a self-test on every startup that detects this exact failure mode and prints actionable hints. You can re-run it any time with:
+
+```bash
+curl -s "http://localhost:$(jq -r .port ~/.squeezr/runtime.json)/squeezr/selftest?run=1" | jq
+```
+
 ## License
 
 MIT
