@@ -4,6 +4,7 @@ import { app, stats } from './server.js'
 import { config } from './config.js'
 import { VERSION } from './version.js'
 import { startMitmProxy } from './codexMitm.js'
+import { resolveRealIps, startDirectTlsServer } from './cursorMitm.js'
 import { loadSessionCache, persistSessionCache } from './sessionCache.js'
 import { loadExpandStore, persistExpandStore } from './expand.js'
 import { loadHistory, persistHistory } from './history.js'
@@ -53,6 +54,32 @@ httpServer.listen(PORT, () => {
 
 // Start MITM proxy for Codex OAuth (chatgpt.com/backend-api)
 startMitmProxy()
+
+// Auto-start Cursor TLS server if hosts entry is present (squeezr setup was run)
+import fs from 'node:fs'
+const HOSTS_FILE = process.platform === 'win32' ? 'C:\\Windows\\System32\\drivers\\etc\\hosts' : '/etc/hosts'
+try {
+  if (fs.readFileSync(HOSTS_FILE, 'utf-8').includes('# squeezr-cursor-mitm')) {
+    const startWithRetry = async (retries = 5, delay = 2000) => {
+      for (let i = 0; i < retries; i++) {
+        try {
+          const ipMap = await resolveRealIps()
+          await startDirectTlsServer(ipMap)
+          console.log('[squeezr/cursor] TLS server started (hosts redirect active)')
+          return
+        } catch (e: any) {
+          if (e.code === 'EADDRINUSE' && i < retries - 1) {
+            await new Promise(r => setTimeout(r, delay))
+          } else {
+            console.error(`[squeezr/cursor] TLS server start failed: ${e.message}`)
+            return
+          }
+        }
+      }
+    }
+    startWithRetry()
+  }
+} catch { /* hosts file unreadable */ }
 
 const isDaemon = !!process.env.SQUEEZR_DAEMON
 

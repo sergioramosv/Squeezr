@@ -2,6 +2,7 @@
 
 import { spawn, execSync } from 'child_process'
 import http from 'http'
+import net from 'net'
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
@@ -401,6 +402,13 @@ async function checkStatus() {
         } catch {
           console.log(`Squeezr is running on port ${port}`)
         }
+        // Cursor TLS server status
+        const hostsFile = process.platform === 'win32'
+          ? 'C:\\Windows\\System32\\drivers\\etc\\hosts'
+          : '/etc/hosts'
+        const hostsActive = fs.existsSync(hostsFile) &&
+          fs.readFileSync(hostsFile, 'utf-8').includes('# squeezr-cursor-mitm')
+        checkCursorTls(hostsActive)
         resolve(true)
       })
     })
@@ -414,6 +422,24 @@ async function checkStatus() {
       resolve(false)
     })
   })
+}
+
+function checkCursorTls(hostsActive) {
+  const s = net.createConnection({ host: '127.0.0.1', port: 8443 })
+  s.on('connect', () => {
+    s.destroy()
+    const status = hostsActive
+      ? '✅ active (hosts redirect + TLS server running)'
+      : '⚠️  TLS server running but hosts not set (run: squeezr setup)'
+    console.log(`  Cursor interception:              ${status}`)
+  })
+  s.on('error', () => {
+    const status = hostsActive
+      ? '⚠️  hosts set but TLS server not running'
+      : '○  not configured (run: squeezr setup)'
+    console.log(`  Cursor interception:              ${status}`)
+  })
+  setTimeout(() => s.destroy(), 500)
 }
 
 function showConfig() {
@@ -944,7 +970,20 @@ function setupWindows() {
         console.log(`         certutil -addstore -user Root "${caPath}"`)
       }
     }
-    printDone()
+    // Cursor interception setup
+    if (isWindowsAdmin()) {
+      loadCursorMitm().then(({ resolveRealIps, addHostsEntry, setupPortProxy }) => {
+        resolveRealIps().then(() => { addHostsEntry(); setupPortProxy() })
+          .then(() => console.log('  [ok] Cursor interception configured'))
+          .catch(e => console.log(`  [warn] Cursor setup failed: ${e.message}`))
+          .finally(printDone)
+      })
+    } else {
+      const ok = elevateAndRunAdminSetup()
+      if (ok) console.log('  [ok] Cursor interception configured')
+      else console.log('  [warn] Cursor setup skipped (UAC cancelled) — run: squeezr cursor enable')
+      printDone()
+    }
   })
 
   function printDone() {
@@ -1417,12 +1456,117 @@ async function startTunnel() {
   process.on('SIGTERM', () => { child.kill(); process.exit(0) })
 }
 
+// ── Cursor MITM helpers ───────────────────────────────────────────────────────
+
+function isWindowsAdmin() {
+  if (process.platform !== 'win32') return true
+  try { execSync('net session', { stdio: 'pipe' }); return true } catch { return false }
+}
+
+function elevateAndRunAdminSetup() {
+  const nodeExe = process.execPath.replace(/\\/g, '\\\\')
+  const squeezrBin = process.argv[1].replace(/\\/g, '\\\\')
+  const ps = `Start-Process '${nodeExe}' -ArgumentList @('${squeezrBin}', 'cursor', '--admin-setup') -Verb RunAs -Wait`
+  try { execSync(`powershell -Command "${ps}"`, { stdio: 'inherit' }); return true } catch { return false }
+}
+
+async function loadCursorMitm() {
+  const distPath = path.join(ROOT, 'dist', 'cursorMitm.js')
+  if (!fs.existsSync(distPath)) {
+    console.error(`Error: ${distPath} not found. Run 'npm run build' first.`)
+    process.exit(1)
+  }
+  const distUrl = process.platform === 'win32'
+    ? 'file:///' + distPath.replace(/\\/g, '/')
+    : distPath
+  return import(distUrl)
+}
+
+async function cursorAdminSetup() {
+  const { resolveRealIps, addHostsEntry, setupPortProxy } = await loadCursorMitm()
+  try {
+    await resolveRealIps()
+    addHostsEntry()
+    if (process.platform === 'win32') setupPortProxy()
+  } catch (err) {
+    console.error(`Admin setup failed: ${err.message}`)
+    process.exit(1)
+  }
+  process.exit(0)
+}
+
+async function cursorAdminTeardown() {
+  const { removeHostsEntry, removePortProxy } = await loadCursorMitm()
+  removeHostsEntry()
+  if (process.platform === 'win32') removePortProxy()
+  process.exit(0)
+}
+
+async function cursorEnable() {
+  const caDir = path.join(os.homedir(), '.squeezr', 'mitm-ca')
+  if (!fs.existsSync(path.join(caDir, 'ca.crt'))) {
+    console.error('MITM CA not found. Run `squeezr setup` first.')
+    process.exit(1)
+  }
+  const { resolveRealIps, addHostsEntry, setupPortProxy } = await loadCursorMitm()
+  const hostsFile = process.platform === 'win32' ? 'C:\\Windows\\System32\\drivers\\etc\\hosts' : '/etc/hosts'
+  const hostsAlreadySet = fs.existsSync(hostsFile) && fs.readFileSync(hostsFile, 'utf-8').includes('# squeezr-cursor-mitm')
+  if (!hostsAlreadySet) {
+    if (process.platform === 'win32' && !isWindowsAdmin()) {
+      console.log('Setting up hosts redirect (UAC prompt will appear)...')
+      if (!elevateAndRunAdminSetup()) { console.error('UAC cancelled.'); process.exit(1) }
+    } else {
+      try { await resolveRealIps(); addHostsEntry() } catch (err) { console.error(`Failed: ${err.message}`); process.exit(1) }
+      if (process.platform === 'win32') { try { setupPortProxy() } catch (err) { console.error(`portproxy failed: ${err.message}`); process.exit(1) } }
+    }
+  }
+  const port = getPort()
+  const res = await new Promise(resolve => {
+    const req = http.request({ hostname: 'localhost', port, path: '/squeezr/cursor/start', method: 'POST' }, res => {
+      let data = ''; res.on('data', d => { data += d }); res.on('end', () => { try { resolve(JSON.parse(data)) } catch { resolve({ ok: false }) } })
+    })
+    req.on('error', () => resolve({ ok: false, error: 'daemon not running' }))
+    req.end()
+  })
+  if (!res.ok) { console.error(`Failed to start TLS server: ${res.error || 'unknown'}`); process.exit(1) }
+  console.log('Cursor interception active. Use Cursor normally.')
+}
+
+async function cursorDisable() {
+  const { stopDirectTlsServer } = await loadCursorMitm()
+  try { stopDirectTlsServer() } catch {}
+  if (process.platform === 'win32' && !isWindowsAdmin()) {
+    console.log('Removing hosts redirect (UAC prompt will appear)...')
+    const nodeExe = process.execPath.replace(/\\/g, '\\\\')
+    const squeezrBin = process.argv[1].replace(/\\/g, '\\\\')
+    const ps = `Start-Process '${nodeExe}' -ArgumentList @('${squeezrBin}', 'cursor', '--admin-teardown') -Verb RunAs -Wait`
+    execSync(`powershell -Command "${ps}"`, { stdio: 'inherit' })
+  } else {
+    const { removeHostsEntry, removePortProxy } = await loadCursorMitm()
+    removeHostsEntry()
+    if (process.platform === 'win32') removePortProxy()
+  }
+  console.log('Cursor MITM disabled.')
+}
+
 // ── CLI router ────────────────────────────────────────────────────────────────
 
 switch (command) {
   case undefined:
   case 'start':
     startDaemon()
+    break
+
+  case 'cursor':
+    if (args[1] === 'disable' || args[1] === 'stop') {
+      await cursorDisable()
+    } else if (args[1] === '--admin-setup') {
+      await cursorAdminSetup()
+    } else if (args[1] === '--admin-teardown') {
+      await cursorAdminTeardown()
+    } else {
+      await cursorEnable()
+    }
     break
 
   case 'setup':

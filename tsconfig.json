@@ -16,8 +16,6 @@
   ],
   "exclude": [
     "node_modules",
-    "dist",
-    "src/cursorMitm.ts",
-    "src/__tests__/cursorMitm.test.ts"
+    "dist"
   ]
 }

@@ -2,6 +2,56 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.23.0] - 2026-04-22
+
+### Added
+
+- **Cursor subscription MITM — hosts file redirect (OS-level, bypass-proof)**
+  Completely redesigned Cursor interception. Previous approach (`HTTPS_PROXY`) was
+  bypassed by Cursor's Electron H2 chat client. New approach:
+  1. OS hosts file: `127.0.0.1 api2.cursor.sh` + all `api5.cursor.sh` subdomains —
+     Cursor cannot bypass this regardless of its HTTP client implementation.
+  2. Windows `netsh portproxy` maps `127.0.0.1:443 → 127.0.0.1:8443`.
+  3. Local TLS H2 server on port 8443 with SNI-based multi-host cert generation
+     intercepts all traffic transparently.
+  Works with Cursor's built-in subscription — no BYOK, no config changes in Cursor.
+
+- **Cursor 3.x / api5 support** — Cursor 3.x migrated chat from `api2.cursor.sh
+  /aiserver.v1.ChatService` to `agentn.api5.cursor.sh /agent.v1.AgentService/Run`.
+  All api5 subdomains now intercepted: `agent`, `agentn`, `agent-gcpp-uswest`,
+  `agentn-gcpp-uswest`, `agentn-gcpp-eucentral`, `agentn-gcpp-apsoutheast`.
+
+- **`squeezr setup` auto-configures Cursor** — single UAC prompt (Windows) or `sudo`
+  (Linux/macOS) adds all hosts entries and portproxy. After that, Cursor is intercepted
+  on every `squeezr start` with no further action required.
+
+- **`squeezr start` auto-starts Cursor TLS server** — if hosts entries are present,
+  TLS server starts automatically as part of the daemon. Retry logic on `EADDRINUSE`.
+
+- **`squeezr status` shows Cursor interception status** — `✅ active`,
+  `⚠️ hosts set but TLS not running`, or `○ not configured`.
+
+- **`squeezr cursor enable` / `squeezr cursor disable`** — explicit commands to
+  set up or tear down Cursor interception with automatic UAC elevation.
+
+- **`squeezr tunnel` fixed on Windows** — `spawn EINVAL` with `npx cloudflared`.
+  Fixed by adding `shell: true` for `.cmd` executables on Windows.
+
+### Fixed
+
+- **SNI hostname mismatch for api5** — upstream H2 sessions used `api2.cursor.sh`
+  as SNI for all hosts, causing TLS cert errors on `*.api5.cursor.sh`. Fixed.
+
+- **Race condition in H2 stream handler** — async DNS resolution delayed data listener
+  registration, losing the 66KB gzip request body. Fixed: listeners registered
+  synchronously before any async work.
+
+- **H2 trailer forwarding** — ConnectRPC streaming uses trailers for end-of-stream
+  status. Missing trailer forwarding caused Cursor to see streams as failed. Fixed.
+
+- **`write after end` in transparent proxy** — buffering GET requests before piping
+  caused protocol errors. Transparent proxy now pipes in real-time.
+
 ## [1.22.0] - 2026-04-10
 ### Added
 - **Resilience: Circuit breaker for AI compression** — After 3 consecutive AI compression failures (Haiku/GPT-4o-mini/Gemini Flash), Squeezr automatically skips AI compression for 60s, then probes recovery. Prevents hammering a down backend. State visible in dashboard, MCP `squeezr_status`, and `squeezr status` CLI.

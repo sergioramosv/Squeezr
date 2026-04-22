@@ -704,6 +704,19 @@ app.post('/squeezr/config', async (c) => {
   return c.json({ ok: true, mode: runtimeOverrides.mode })
 })
 
+// ── Cursor TLS server (start on demand) ──────────────────────────────────────
+
+app.post('/squeezr/cursor/start', async (c) => {
+  try {
+    const { resolveRealIps, startDirectTlsServer } = await import('./cursorMitm.js')
+    const ipMap = await resolveRealIps()
+    await startDirectTlsServer(ipMap)
+    return c.json({ ok: true, port: 8443 })
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500)
+  }
+})
+
 // ── Bypass mode (runtime-only compression toggle) ────────────────────────────
 
 app.get('/squeezr/bypass', (c) => {
