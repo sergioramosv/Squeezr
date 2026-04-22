@@ -306,6 +306,136 @@ function isGzip(buf: Buffer): boolean {
   return buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b
 }
 
+// ── Smart-pipe compression for AgentService/Run ──────────────────────────────
+// Walks the proto tree recursively, finds long natural-language string fields,
+// applies deterministic compression. Schema-agnostic — safe because we only
+// modify fields that look like human-readable text (>80% printable ASCII).
+
+function looksLikeText(buf: Buffer): boolean {
+  if (buf.length < 80) return false
+  let printable = 0
+  const sample = Math.min(buf.length, 512)
+  for (let i = 0; i < sample; i++) {
+    const c = buf[i]
+    if ((c >= 32 && c < 127) || c === 9 || c === 10 || c === 13) printable++
+  }
+  return printable / sample > 0.82
+}
+
+/** Recursively compress long text fields in a protobuf payload. Returns null if nothing changed. */
+function compressProtoStrings(payload: Buffer, depth = 0): Buffer | null {
+  if (depth > 6 || payload.length < 50) return null
+  const fields = parseProtoFields(payload)
+  let modified = false
+  const newParts: Buffer[] = []
+
+  for (const field of fields) {
+    if (field.wireType !== WIRE_LENGTH_DELIMITED) {
+      newParts.push(field.data)
+      continue
+    }
+    const inner = extractLengthDelimitedPayload(field.data)
+
+    // Try as text first — only if valid UTF-8 (no replacement chars)
+    if (looksLikeText(inner)) {
+      const text = inner.toString('utf-8')
+      if (!text.includes('�')) {
+        // Valid UTF-8 text — compress deterministically
+        const compressed = deterministicCompress(text)
+        if (compressed.length < text.length - 50) {
+          modified = true
+          newParts.push(encodeLengthDelimited(field.fieldNumber, Buffer.from(compressed, 'utf-8')))
+          continue
+        }
+      }
+    }
+    // Always try as nested proto for large fields (even if text check passed)
+    if (inner.length > 100) {
+      const compressedInner = compressProtoStrings(inner, depth + 1)
+      if (compressedInner && compressedInner.length < inner.length) {
+        modified = true
+        newParts.push(encodeLengthDelimited(field.fieldNumber, compressedInner))
+        continue
+      }
+    }
+    newParts.push(field.data)
+  }
+
+  return modified ? Buffer.concat(newParts) : null
+}
+
+// Proto structure discovered via hex analysis:
+//   root → field#1 → field#2 (large, conversation+files) → field#1 (container)
+//     container → field#1 entries (messages: text+UUID+metadata)
+//               → field#2 entries (file context chunks, 176 files × ~1-15KB each)
+// Compression via compressProtoStrings applied to the full payload tree.
+
+/** Process one ConnectRPC frame: decompress, compress text content, recompress. */
+function processAgentFrame(frameBuf: Buffer): Buffer {
+  const frame = parseConnectFrame(frameBuf)
+  if (!frame) return frameBuf
+
+  const payload = isGzip(frame.payload) ? zlib.gunzipSync(frame.payload) : frame.payload
+
+  // Apply recursive text compression across the entire payload tree.
+  // Finds and compresses: file content chunks, code files, long text fields.
+  // Safe: only touches fields that are >80 chars of valid non-binary UTF-8.
+  const newPayload = compressProtoStrings(payload)
+  if (!newPayload || newPayload.length >= payload.length) return frameBuf
+
+  const charsSaved = payload.length - newPayload.length
+  const pct = Math.round(charsSaved / payload.length * 100)
+  cursorStats.compressed++
+  cursorStats.charsSaved += charsSaved
+  console.log(`[squeezr/cursor] AgentRun compressed: -${charsSaved} chars (-${pct}%)`)
+
+  const finalPayload = isGzip(frame.payload) ? zlib.gzipSync(newPayload) : newPayload
+  return buildConnectFrame(finalPayload, frame.flag)
+}
+
+/** Smart-pipe: send HEADERS immediately, buffer chunks until ConnectRPC frame complete, compress, forward. */
+function pipeWithCompression(
+  clientStream: http2.ServerHttp2Stream,
+  upStream: http2.ClientHttp2Session['request'] extends (...args: any[]) => infer R ? R : never,
+): void {
+  let frameBuf = Buffer.alloc(0)
+  let frameProcessed = false
+
+  clientStream.on('data', (chunk: Buffer) => {
+    if (frameProcessed) {
+      try { upStream.write(chunk) } catch {}
+      return
+    }
+
+    frameBuf = Buffer.concat([frameBuf, chunk])
+
+    // Need at least 5 bytes for ConnectRPC header
+    if (frameBuf.length < 5) return
+
+    // Check if we have the complete frame
+    const frame = parseConnectFrame(frameBuf)
+    if (!frame || frameBuf.length < frame.total) return
+
+    // Got complete frame — process it
+    frameProcessed = true
+    const remaining = frameBuf.subarray(frame.total)
+
+    try {
+      const processed = processAgentFrame(frameBuf.subarray(0, frame.total))
+      try { upStream.write(processed) } catch {}
+    } catch {
+      try { upStream.write(frameBuf.subarray(0, frame.total)) } catch {}
+    }
+
+    if (remaining.length > 0) {
+      try { upStream.write(remaining) } catch {}
+    }
+  })
+
+  clientStream.on('end', () => { try { upStream.end() } catch {} })
+  clientStream.on('error', () => { try { upStream.close() } catch {} })
+}
+
 // ── Compression via Cursor's own API ─────────────────────────────────────────
 
 let cursorStats = { requests: 0, compressed: 0, charsSaved: 0 }
@@ -630,6 +760,31 @@ function handleCursorH2(
       try { clientStream.close(http2.constants.NGHTTP2_INTERNAL_ERROR) } catch {}
     })
 
+    if (path === CURSOR_AGENT_RUN_PATH) {
+      // ── Smart-pipe: compress AgentService/Run without buffering delay ─────
+      cursorStats.requests++
+      const upStream = upstreamSession.request(upHeaders)
+      pipeWithCompression(clientStream, upStream)
+      // Wire up response path (same as transparent)
+      upStream.on('response', (upRespHeaders) => {
+        const respHeaders: Record<string, string | string[]> = {}
+        for (const [k, v] of Object.entries(upRespHeaders)) {
+          if (k === ':status') continue; respHeaders[k] = v as string
+        }
+        try { clientStream.respond({ ':status': upRespHeaders[':status'] ?? 200, ...respHeaders }) } catch {}
+      })
+      upStream.on('data', (chunk: Buffer) => { try { clientStream.write(chunk) } catch {} })
+      upStream.on('trailers', (t) => {
+        try { const tr: Record<string, string> = {}; for (const [k, v] of Object.entries(t)) tr[k] = v as string; ;(clientStream as any).additionalHeaders(tr) } catch {}
+      })
+      upStream.on('end', () => { try { clientStream.end() } catch {} })
+      upStream.on('error', (e) => {
+        console.error(`[squeezr/cursor] agent error: ${e.message}`)
+        try { clientStream.close(http2.constants.NGHTTP2_INTERNAL_ERROR) } catch {}
+      })
+      return
+    }
+
     if (!shouldIntercept) {
       // ── Transparent proxy: pipe in real-time (no buffering) ──────────────
       const upStream = upstreamSession.request(upHeaders)
@@ -674,48 +829,7 @@ function handleCursorH2(
       console.log(`[squeezr/cursor] intercepted ${path} body=${requestBuf.length}b`)
 
       // ── Intercepted chat path: compress and forward ────────────
-      console.log(`[squeezr/cursor] intercepted ${path} requestBuf=${requestBuf.length}b headers=${JSON.stringify(Object.keys(upHeaders))}`)
       cursorStats.requests++
-
-      // Log proto structure for AgentService/Run (payload is gzip-compressed)
-      if (path === CURSOR_AGENT_RUN_PATH) {
-        try {
-          const frame = parseConnectFrame(requestBuf)
-          if (frame) {
-            const payload = isGzip(frame.payload) ? zlib.gunzipSync(frame.payload) : frame.payload
-            const fields = parseProtoFields(payload)
-            const summary = fields.slice(0, 10).map(f => `#${f.fieldNumber}(wt${f.wireType},${f.data.length}b)`).join(', ')
-            console.log(`[squeezr/cursor] AgentRun decompressed(${payload.length}b) fields: ${summary}`)
-            for (const f of fields.slice(0, 8)) {
-              if (f.wireType === 2) {
-                const inner = extractLengthDelimitedPayload(f.data)
-                const innerFields = parseProtoFields(inner)
-                const innerSummary = innerFields.slice(0, 8).map(fi => `#${fi.fieldNumber}(wt${fi.wireType},${fi.data.length}b)`).join(', ')
-                console.log(`[squeezr/cursor]   #${f.fieldNumber}: ${innerSummary}`)
-                // Go one level deeper for nested messages
-                for (const fi of innerFields.slice(0, 5)) {
-                  if (fi.wireType === 2) {
-                    const inner2 = extractLengthDelimitedPayload(fi.data)
-                    const inner2Fields = parseProtoFields(inner2)
-                    const s2 = inner2Fields.slice(0, 6).map(f2 => `#${f2.fieldNumber}(wt${f2.wireType},${f2.data.length}b)`).join(', ')
-                    // Print string fields (likely conversation text)
-                    for (const f2 of inner2Fields) {
-                      if (f2.wireType === 2) {
-                        const txt = extractLengthDelimitedPayload(f2.data)
-                        const str = txt.toString('utf-8')
-                        if (str.length > 10 && str.length < 200 && /[\x20-\x7e]{10}/.test(str)) {
-                          console.log(`[squeezr/cursor]     #${f.fieldNumber}.${fi.fieldNumber}.${f2.fieldNumber}: "${str.substring(0,100)}"`)
-                        }
-                      }
-                    }
-                    if (s2) console.log(`[squeezr/cursor]     #${f.fieldNumber}.${fi.fieldNumber}: ${s2}`)
-                  }
-                }
-              }
-            }
-          }
-        } catch (e: any) { console.log(`[squeezr/cursor] AgentRun parse error: ${e.message}`) }
-      }
 
       try {
         // Parse ConnectRPC frame
@@ -827,39 +941,21 @@ function forwardRaw(
   let bytesForwarded = 0, chunksForwarded = 0
 
   upStream.on('response', (upRespHeaders) => {
-    const status = upRespHeaders[':status'] ?? 200
-    console.log(`[squeezr/cursor] fwd response status=${status}`)
     const respHeaders: Record<string, string | string[]> = {}
     for (const [k, v] of Object.entries(upRespHeaders)) {
       if (k === ':status') continue
       respHeaders[k] = v as string
     }
-    try { clientStream.respond({ ':status': status, ...respHeaders }) }
-    catch (e: any) { console.error(`[squeezr/cursor] respond error: ${e.message}`) }
+    try { clientStream.respond({ ':status': upRespHeaders[':status'] ?? 200, ...respHeaders }) } catch {}
   })
 
-  upStream.on('data', (chunk: Buffer) => {
-    bytesForwarded += chunk.length; chunksForwarded++
-    if (chunksForwarded <= 3) console.log(`[squeezr/cursor] fwd chunk #${chunksForwarded} ${chunk.length}b`)
-    try { clientStream.write(chunk) } catch {}
+  upStream.on('data', (chunk: Buffer) => { bytesForwarded += chunk.length; chunksForwarded++; try { clientStream.write(chunk) } catch {} })
+  upStream.on('trailers', (t) => {
+    try { const tr: Record<string, string> = {}; for (const [k, v] of Object.entries(t)) tr[k] = v as string; ;(clientStream as any).additionalHeaders(tr) } catch {}
   })
-
-  upStream.on('trailers', (trailerHeaders) => {
-    console.log(`[squeezr/cursor] fwd trailers: ${JSON.stringify(trailerHeaders)}`)
-    try {
-      const trailers: Record<string, string> = {}
-      for (const [k, v] of Object.entries(trailerHeaders)) trailers[k] = v as string
-      ;(clientStream as any).additionalHeaders(trailers)
-    } catch {}
-  })
-
-  upStream.on('end', () => {
-    console.log(`[squeezr/cursor] fwd end — ${chunksForwarded} chunks ${bytesForwarded}b`)
-    try { clientStream.end() } catch {}
-  })
-
+  upStream.on('end', () => { try { clientStream.end() } catch {} })
   upStream.on('error', (e) => {
-    console.error(`[squeezr/cursor] fwd upstream error: ${e.message}`)
+    console.error(`[squeezr/cursor] fwd error: ${e.message}`)
     try { clientStream.close(http2.constants.NGHTTP2_INTERNAL_ERROR) } catch {}
   })
   clientStream.on('error', () => { try { upStream.close() } catch {} })
