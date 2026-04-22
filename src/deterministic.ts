@@ -885,14 +885,37 @@ function compactReadOutput(text: string): string {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 /**
+ * Safe preprocess variant for Read tool results.
+ * Skips stripProgressBars — that filter removes blank lines from cat-n output
+ * (line numbers like "     2\t" strip down to "2", length 1, failing both
+ * the 30% and the >5 thresholds) which causes Edit tool mismatches because
+ * Claude sees a file without blank lines but the real file still has them.
+ */
+function preprocessRead(text: string): string {
+  let t = stripAnsi(text)
+  // stripProgressBars intentionally omitted — see comment above
+  t = stripTimestamps(t)
+  t = deduplicateStackTraces(t)
+  t = deduplicateLines(t)
+  t = minifyJson(t)
+  t = collapseWhitespace(t)
+  return t
+}
+
+/**
  * Run all deterministic stages for a given tool result.
  * Applies base pipeline first, then tool-specific patterns.
  * Called on ALL tool results including recent ones — covers turn-1 compression
  * without the user needing to prefix commands with `rtk`.
  */
 export function preprocessForTool(text: string, toolName: string, pressure = 0): string {
-  let t = preprocess(text)
   const tool = toolName.toLowerCase()
+
+  if (tool === 'read') {
+    return compactReadOutput(preprocessRead(text))
+  }
+
+  let t = preprocess(text)
 
   if (tool === 'bash') {
     t = applyBashPatterns(t, pressure)
@@ -900,8 +923,6 @@ export function preprocessForTool(text: string, toolName: string, pressure = 0):
     const before = t
     t = compactGrepOutput(t, pressure)
     if (t !== before) hit('grepCompacted')
-  } else if (tool === 'read') {
-    t = compactReadOutput(t)
   } else if (tool === 'glob') {
     const lines = t.split('\n').filter(l => l.trim())
     if (lines.length > 30) { hit('globCompacted'); t = compactFileListing(t) }
