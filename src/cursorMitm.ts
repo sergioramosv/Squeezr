@@ -306,6 +306,292 @@ function isGzip(buf: Buffer): boolean {
   return buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b
 }
 
+// ── File context AI compression (cached by content hash) ─────────────────────
+// Same mechanism as system prompt compression: hash → cache → Haiku.
+// First request: compress with deterministic + schedule AI in background.
+// Subsequent requests with same file content: use cached AI-compressed version instantly.
+
+const FILE_CTX_CACHE_PATH = join(homedir(), '.squeezr', 'cursor_file_cache.json')
+const FILE_CTX_MIN_SIZE = 500  // only compress files > 500 chars
+
+
+let fileCtxCache: Record<string, string> = {}
+let cacheLoaded = false
+
+function loadFileCtxCache(): void {
+  if (cacheLoaded) return
+  cacheLoaded = true
+  try {
+    if (fs.existsSync(FILE_CTX_CACHE_PATH)) {
+      fileCtxCache = JSON.parse(fs.readFileSync(FILE_CTX_CACHE_PATH, 'utf-8'))
+    }
+  } catch { fileCtxCache = {} }
+}
+
+function saveFileCtxCache(): void {
+  try {
+    fs.writeFileSync(FILE_CTX_CACHE_PATH, JSON.stringify(fileCtxCache))
+  } catch {}
+}
+
+function fileContentHash(content: string): string {
+  return crypto.createHash('md5').update(content).digest('hex').slice(0, 12)
+}
+
+/** Get cached compressed version of file content, or null if not cached yet */
+function getCachedFileContent(content: string): string | null {
+  loadFileCtxCache()
+  const key = fileContentHash(content)
+  return fileCtxCache[key] ?? null
+}
+
+/** Compress text using api5 AgentService/Run (bypasses hosts redirect via real IP).
+ *  Reuses the minimal structure from a real Cursor request — just changes the message text. */
+async function compressViaApi5(
+  textToCompress: string,
+  bearerToken: string,
+  headers: Record<string, string>,
+): Promise<string | null> {
+  const api5RealIp = resolvedIpMap.get('agentn.api5.cursor.sh')?.[0]
+  if (!api5RealIp || !bearerToken) return null
+
+  const prompt = `Compress this to minimum tokens preserving all technical content, instructions, code examples, paths and rules. Remove only redundant prose. Output ONLY the compressed content:\n\n${textToCompress.slice(0, 10000)}`
+
+  // Build minimal AgentService/Run proto:
+  // field#1(plain_text) = prompt, field#2(UUID)
+  const msgUuid = crypto.randomBytes(18).toString('hex').slice(0, 36)
+  const msgPayload = Buffer.concat([
+    encodeString(1, prompt),
+    encodeString(2, msgUuid),
+  ])
+  const containerField1 = encodeLengthDelimited(1, msgPayload)
+  // field#2 = empty file context (no files needed for compression)
+  const container = containerField1
+  const l3F1 = encodeLengthDelimited(1, container)
+  const l2F1 = encodeLengthDelimited(1, l3F1)
+  const l1F2 = encodeLengthDelimited(2, l2F1)
+  // field#1 = minimal workspace (just a marker)
+  const l1F1 = encodeLengthDelimited(1, Buffer.from([]))
+  const l1 = Buffer.concat([l1F1, l1F2])
+  const rootF1 = encodeLengthDelimited(1, l1)
+  const protoPayload = rootF1
+  const gzipped = zlib.gzipSync(protoPayload)
+  const frame = buildConnectFrame(gzipped)
+
+  return new Promise<string | null>((resolve) => {
+    const timeout = setTimeout(() => { resolve(null) }, 20_000)
+
+    const session = http2.connect(`https://${api5RealIp}`, {
+      rejectUnauthorized: true,
+      servername: 'agentn.api5.cursor.sh',
+    })
+    session.on('error', () => { clearTimeout(timeout); resolve(null) })
+
+    const reqHeaders: Record<string, string> = {
+      ':method': 'POST',
+      ':path': CURSOR_AGENT_RUN_PATH,
+      ':authority': 'agentn.api5.cursor.sh',
+      'content-type': 'application/connect+proto',
+      'connect-protocol-version': '1',
+      'connect-content-encoding': 'gzip',
+      'authorization': bearerToken,
+    }
+    for (const [k, v] of Object.entries(headers)) {
+      const lk = k.toLowerCase()
+      if (lk.startsWith('x-cursor-') || lk === 'x-ghost-mode' || lk === 'x-session-id' || lk === 'x-client-key') {
+        reqHeaders[lk] = v as string
+      }
+    }
+
+    const req = session.request(reqHeaders)
+    req.write(frame)
+    req.end()
+
+    let responseBuf = Buffer.alloc(0)
+    req.on('data', (chunk: Buffer) => { responseBuf = Buffer.concat([responseBuf, chunk]) })
+    req.on('trailers', () => {})
+    req.on('end', () => {
+      clearTimeout(timeout)
+      session.close()
+      try {
+        // Extract text from streaming response frames
+        let text = ''
+        let offset = 0
+        while (offset < responseBuf.length) {
+          const frame = parseConnectFrame(responseBuf.subarray(offset))
+          if (!frame) break
+          offset += frame.total
+          if (frame.flag !== 0) continue
+          // Walk proto to find text fields
+          const fields = parseProtoFields(frame.payload)
+          for (const f of fields) {
+            if (f.wireType !== WIRE_LENGTH_DELIMITED) continue
+            const inner = extractLengthDelimitedPayload(f.data)
+            if (looksLikeText(inner)) {
+              const candidate = inner.toString('utf-8')
+              if (candidate.length > text.length && !candidate.includes('�')) text = candidate
+            }
+          }
+        }
+        if (text.length > 50 && text.length < textToCompress.length - 50) {
+          resolve(text)
+        } else {
+          resolve(null)
+        }
+      } catch { resolve(null) }
+    })
+    req.on('error', () => { clearTimeout(timeout); session.close(); resolve(null) })
+  })
+}
+
+/** Cache file content compressed by api5 cursor-small (scheduled in background). */
+async function cacheFileWithCursorAI(content: string, bearerToken: string, headers: Record<string, string>): Promise<void> {
+  if (content.length < FILE_CTX_MIN_SIZE || !bearerToken) return
+  const key = fileContentHash(content)
+  if (fileCtxCache[key]) return
+  const compressed = await compressViaApi5(content, bearerToken, headers)
+  if (!compressed) return
+  const pct = Math.round((1 - compressed.length / content.length) * 100)
+  console.log(`[squeezr/cursor] api5 compressed -${pct}% (${content.length}→${compressed.length}) cached`)
+  fileCtxCache[key] = compressed
+  saveFileCtxCache()
+}
+
+/** Cache a deterministically-compressed version of file content for fast reuse. */
+function cacheFileContent(content: string): void {
+  if (content.length < FILE_CTX_MIN_SIZE) return
+  const key = fileContentHash(content)
+  if (fileCtxCache[key]) return
+  const compressed = deterministicCompress(content)
+  if (compressed.length < content.length - 50) {
+    fileCtxCache[key] = compressed
+    saveFileCtxCache()
+  }
+}
+
+/** Navigate to file content chunks and compress them (det + AI cached by hash) */
+function compressFileContextChunks(payload: Buffer, bearerToken = '', cursorHeaders: Record<string, string> = {}): Buffer | null {
+  try {
+    loadFileCtxCache()
+    const rootF1 = parseProtoFields(payload).find(f => f.fieldNumber === 1 && f.wireType === WIRE_LENGTH_DELIMITED)
+    if (!rootF1) return null
+    const l1Fs = parseProtoFields(extractLengthDelimitedPayload(rootF1.data))
+    const l1Large = l1Fs.filter(f => f.wireType === WIRE_LENGTH_DELIMITED && f.data.length > 10000)
+      .sort((a, b) => b.data.length - a.data.length)[0]
+    if (!l1Large) return null
+
+    const l2 = extractLengthDelimitedPayload(l1Large.data)
+    const l2F1 = parseProtoFields(l2).find(f => f.fieldNumber === 1 && f.wireType === WIRE_LENGTH_DELIMITED)
+    if (!l2F1) return null
+
+    const container = extractLengthDelimitedPayload(l2F1.data)
+    const containerFs = parseProtoFields(container)
+    const fileField = containerFs.find(f => f.fieldNumber === 2 && f.wireType === WIRE_LENGTH_DELIMITED)
+    if (!fileField) return null
+
+    const fileBuf = extractLengthDelimitedPayload(fileField.data)
+    const allFs = parseProtoFields(fileBuf)
+    const chunks = allFs.filter(f => f.fieldNumber === 2 && f.wireType === WIRE_LENGTH_DELIMITED)
+    if (chunks.length === 0) return null
+
+    let totalSaved = 0
+    let modified = false
+    const newFileBufParts: Buffer[] = []
+
+    for (const cf of allFs) {
+      if (cf.fieldNumber !== 2 || cf.wireType !== WIRE_LENGTH_DELIMITED) {
+        newFileBufParts.push(cf.data)
+        continue
+      }
+
+      const chunkInner = extractLengthDelimitedPayload(cf.data)
+      const chunkFs = parseProtoFields(chunkInner)
+      let contentFieldIdx = -1, pathStr = ''
+      let contentBuf: Buffer | null = null
+
+      // Find the content field (largest text field in the chunk)
+      for (let i = 0; i < chunkFs.length; i++) {
+        const sf = chunkFs[i]
+        if (sf.wireType !== WIRE_LENGTH_DELIMITED) continue
+        const sfInner = extractLengthDelimitedPayload(sf.data)
+        // Path detection: contains file path chars
+        const preview = sfInner.subarray(0, 100).toString('utf-8')
+        if ((preview.includes(':\\') || preview.includes('/')) && sf.data.length < 200) {
+          pathStr = preview.replace(/[^\x20-\x7e]/g, '')
+        }
+        // Content: large text field
+        if (sfInner.length > FILE_CTX_MIN_SIZE && looksLikeText(sfInner) && !sfInner.subarray(0,100).toString('utf-8').includes('\\')) {
+          if (contentBuf === null || sfInner.length > contentBuf.length) {
+            contentBuf = sfInner
+            contentFieldIdx = i
+          }
+        }
+      }
+
+      if (contentBuf === null || contentFieldIdx < 0) {
+        newFileBufParts.push(cf.data)
+        continue
+      }
+
+      const originalText = contentBuf.toString('utf-8')
+      const cached = getCachedFileContent(originalText)
+      let newText: string | null = null
+
+      if (cached) {
+        // Use cached version (det or AI)
+        newText = cached
+      } else {
+        // Det compression now, schedule cursor-small AI for next request
+        const det = deterministicCompress(originalText)
+        if (det.length < originalText.length - 50) {
+          newText = det
+          cacheFileContent(originalText)
+        }
+        // Schedule AI compression in background (uses cursor-small, bypasses hosts redirect)
+        if (bearerToken) {
+          cacheFileWithCursorAI(originalText, bearerToken, cursorHeaders).catch(() => {})
+        }
+      }
+
+      if (newText) {
+        const saved = originalText.length - newText.length
+        totalSaved += saved
+        modified = true
+        // Rebuild chunk with compressed content
+        const newChunkParts = chunkFs.map((sf, i) => {
+          if (i === contentFieldIdx) {
+            return encodeLengthDelimited(sf.fieldNumber, Buffer.from(newText!, 'utf-8'))
+          }
+          return sf.data
+        })
+        newFileBufParts.push(encodeLengthDelimited(2, Buffer.concat(newChunkParts)))
+      } else {
+        newFileBufParts.push(cf.data)
+      }
+    }
+
+    if (!modified || totalSaved === 0) return null
+
+    // Rebuild the proto tree
+    const newFileBuf = Buffer.concat(newFileBufParts)
+    const newFileField = encodeLengthDelimited(fileField.fieldNumber, newFileBuf)
+    const containerFidx = containerFs.indexOf(fileField)
+    const newContainer = Buffer.concat(containerFs.map((f, i) => i === containerFidx ? newFileField : f.data))
+    const l2F1idx = parseProtoFields(l2).indexOf(l2F1)
+    const newL2 = Buffer.concat(parseProtoFields(l2).map((f, i) => i === l2F1idx ? encodeLengthDelimited(l2F1.fieldNumber, newContainer) : f.data))
+    const l1Largeidx = l1Fs.indexOf(l1Large)
+    const newL1 = Buffer.concat(l1Fs.map((f, i) => i === l1Largeidx ? encodeLengthDelimited(l1Large.fieldNumber, newL2) : f.data))
+    const rootFs = parseProtoFields(payload)
+    const rootF1idx = rootFs.indexOf(rootF1)
+    const result = Buffer.concat(rootFs.map((f, i) => i === rootF1idx ? encodeLengthDelimited(rootF1.fieldNumber, newL1) : f.data))
+
+    cursorStats.compressed++
+    cursorStats.charsSaved += totalSaved
+    console.log(`[squeezr/cursor] file context: -${totalSaved} chars (-${Math.round(totalSaved/payload.length*100)}%)`)
+    return result
+  } catch { return null }
+}
+
 // ── Smart-pipe compression for AgentService/Run ──────────────────────────────
 // Walks the proto tree recursively, finds long natural-language string fields,
 // applies deterministic compression. Schema-agnostic — safe because we only
@@ -481,16 +767,20 @@ function compressOldConversationMessages(payload: Buffer): Buffer | null {
 }
 
 /** Process one ConnectRPC frame: decompress, compress, recompress. */
-function processAgentFrame(frameBuf: Buffer): Buffer {
+function processAgentFrame(frameBuf: Buffer, cursorHeaders: Record<string, string> = {}): Buffer {
   const frame = parseConnectFrame(frameBuf)
   if (!frame) return frameBuf
 
   const payload = isGzip(frame.payload) ? zlib.gunzipSync(frame.payload) : frame.payload
 
+  // Step 0: File context compression. Det now, cursor-small AI cached for next time.
+  const bearer = (cursorHeaders['authorization'] as string) || ''
+  const afterFileCtx = compressFileContextChunks(payload, bearer, cursorHeaders) ?? payload
+
   // Step 1: Lossless — remove field#8 (Lexical JSON verbose duplicate) from old messages.
   // field#8 = Cursor's rich-text editor JSON of each message.
   // field#1 already has the plain text, so stripping field#8 loses nothing.
-  const afterLossless = compressOldConversationMessages(payload) ?? payload
+  const afterLossless = compressOldConversationMessages(afterFileCtx) ?? afterFileCtx
 
   // Step 2: Deterministic — compress long text fields (tool outputs, verbose content).
   // Safe: only removes noise (blank lines, trailing whitespace, repeated patterns).
@@ -510,6 +800,7 @@ function processAgentFrame(frameBuf: Buffer): Buffer {
 function pipeWithCompression(
   clientStream: http2.ServerHttp2Stream,
   upStream: http2.ClientHttp2Session['request'] extends (...args: any[]) => infer R ? R : never,
+  cursorHeaders: Record<string, string> = {},
 ): void {
   let frameBuf = Buffer.alloc(0)
   let frameProcessed = false
@@ -534,7 +825,7 @@ function pipeWithCompression(
     const remaining = frameBuf.subarray(frame.total)
 
     try {
-      const processed = processAgentFrame(frameBuf.subarray(0, frame.total))
+      const processed = processAgentFrame(frameBuf.subarray(0, frame.total), cursorHeaders)
       try { upStream.write(processed) } catch {}
     } catch {
       try { upStream.write(frameBuf.subarray(0, frame.total)) } catch {}
@@ -557,6 +848,7 @@ export function getCursorStats() {
   return { ...cursorStats }
 }
 
+
 async function compressViaCursor(
   texts: string[],
   bearerToken: string,
@@ -577,13 +869,15 @@ async function compressViaCursor(
     const requestPayload = encodeLengthDelimited(PROTO_FIELD_CONVERSATION, conversationMsg)
     const frame = buildConnectFrame(requestPayload)
 
-    // Make HTTP/2 request to api2.cursor.sh
+    // Make HTTP/2 request to api2.cursor.sh — bypass hosts redirect by using real IP directly
+    const api2RealIp = resolvedIpMap.get(CURSOR_API_HOST)?.[0]
+    const connectUrl = api2RealIp ? `https://${api2RealIp}` : `https://${CURSOR_API_HOST}`
     return await new Promise<string[]>((resolve) => {
       const timeout = setTimeout(() => resolve(texts), 15_000)
 
-      const session = http2.connect(`https://${CURSOR_API_HOST}`, {
-        // Trust system CAs + our MITM CA
+      const session = http2.connect(connectUrl, {
         rejectUnauthorized: true,
+        servername: CURSOR_API_HOST,  // SNI = api2.cursor.sh even when connecting by IP
       })
 
       session.on('error', () => {
@@ -877,7 +1171,10 @@ function handleCursorH2(
       // ── Smart-pipe: compress AgentService/Run without buffering delay ─────
       cursorStats.requests++
       const upStream = upstreamSession.request(upHeaders)
-      pipeWithCompression(clientStream, upStream)
+      // Pass headers so pipeWithCompression can use Cursor's auth token for AI compression
+      const hdrs: Record<string, string> = {}
+      for (const [k, v] of Object.entries(clientHeaders)) hdrs[k] = v as string
+      pipeWithCompression(clientStream, upStream, hdrs)
       // Wire up response path (same as transparent)
       upStream.on('response', (upRespHeaders) => {
         const respHeaders: Record<string, string | string[]> = {}
@@ -1214,6 +1511,8 @@ const HOSTS_MARKER = '# squeezr-cursor-mitm'
 const DIRECT_TLS_PORT = 8443  // squeezr listens here; portproxy maps 443 → 8443
 
 let directTlsServer: tls.Server | null = null
+// Real IPs stored after DNS resolution (before hosts redirect) — used to bypass redirect for internal calls
+let resolvedIpMap: Map<string, string[]> = new Map()
 
 /** Resolve real IPs for all intercepted hosts BEFORE we redirect hosts */
 export async function resolveRealIps(): Promise<Map<string, string[]>> {
@@ -1299,6 +1598,9 @@ export function removePortProxy(): void {
 export function startDirectTlsServer(realIpMap: Map<string, string[]> | string): Promise<void> {
   return new Promise((resolve, reject) => {
     if (directTlsServer) { resolve(); return }
+
+    // Store real IPs for internal bypass calls (compressViaCursor bypasses hosts redirect)
+    if (realIpMap instanceof Map) resolvedIpMap = realIpMap
 
     // Accept legacy string arg (single IP for api2 only) or new Map
     const ipMap: Map<string, string> = new Map()
