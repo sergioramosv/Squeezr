@@ -228,6 +228,9 @@ app.post('/v1/messages', async (c) => {
     if (body.stream) {
       const upstream = await proxyStream(`${ANTHROPIC_API}/v1/messages`, body, fwdHeaders)
       updateAnthropicFromHeaders(upstream.headers)
+      for (const [k, v] of upstream.headers.entries()) {
+        if (!SKIP_RESP_HEADERS.has(k.toLowerCase())) c.header(k, v)
+      }
       return stream(c, async (s) => {
         const reader = upstream.body!.getReader()
         const decoder = new TextDecoder()
@@ -294,6 +297,11 @@ app.post('/v1/messages', async (c) => {
     const upstream = await proxyStream(`${ANTHROPIC_API}/v1/messages`, body, fwdHeaders)
     // Extract rate limit headers immediately (available before body starts)
     updateAnthropicFromHeaders(upstream.headers)
+    // Forward anthropic-ratelimit-* (and other response) headers so Claude Code
+    // can populate rate_limits in the statusline JSON (issue #4).
+    for (const [k, v] of upstream.headers.entries()) {
+      if (!SKIP_RESP_HEADERS.has(k.toLowerCase())) c.header(k, v)
+    }
     return stream(c, async (s) => {
       const reader = upstream.body!.getReader()
       const decoder = new TextDecoder()
@@ -340,8 +348,13 @@ app.post('/v1/messages', async (c) => {
       headers: { ...fwdHeaders, 'content-type': 'application/json' },
       body: JSON.stringify(body),
     })
+    updateAnthropicFromHeaders(continuedResp.headers)
     const continuedBody = await continuedResp.json()
-    return c.json(continuedBody, continuedResp.status as any)
+    const continuedHeaders: Record<string, string> = {}
+    for (const [k, v] of continuedResp.headers.entries()) {
+      if (!SKIP_RESP_HEADERS.has(k.toLowerCase())) continuedHeaders[k] = v
+    }
+    return c.json(continuedBody, continuedResp.status as any, continuedHeaders)
   }
 
   const respHeaders: Record<string, string> = {}
