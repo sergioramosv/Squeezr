@@ -2,7 +2,7 @@
 
 All notable changes to Squeezr will be documented here.
 
-## [1.25.0] - 2026-05-12
+## [1.26.0] - 2026-05-12
 
 ### Added
 
@@ -53,6 +53,29 @@ All notable changes to Squeezr will be documented here.
   and `authorization` are forwarded.
 
 - **File context debug logging removed** — verbose per-chunk logs removed from production path.
+
+## [1.25.0] - 2026-05-12
+
+### Added
+
+- **Markdown compression in deterministic pipeline**
+  `compressMarkdown()` added to `preprocess()`: removes blank line after headings
+  (`## Title\n\ncontent` → `## Title\ncontent`), collapses blank lines between list items
+  and numbered lists, removes blank line after code fence opening. Safe for AI consumption
+  (model reads text, not renders HTML). Applies to all tool outputs including Read results
+  on `.md` files, README contents, documentation fetched via curl/wget.
+
+- **CRLF → LF normalization in `preprocess()`**
+  Windows line endings (`\r\n`) normalized to `\n` before all other pipeline stages.
+  Fixes edge cases where CRLF-encoded tool outputs were not matching deduplication patterns
+  and were bloating the compressed output unnecessarily.
+
+### Fixed
+
+- **Update checker showed false "update available" when local version > npm**
+  When running a pre-release or branch build (e.g. 1.26.0 locally vs 1.24.0 on npm),
+  the update notifier incorrectly showed a downgrade as an available update.
+  Fixed: only prompt if `cached.latest > pkg.version` (semver comparison).
 
 ## [1.24.0] - 2026-04-22
 

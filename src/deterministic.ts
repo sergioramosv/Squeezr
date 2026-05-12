@@ -119,6 +119,21 @@ function deduplicateStackTraces(text: string): string {
   return out.join('\n')
 }
 
+/** Markdown-specific compression: removes redundant blank lines while preserving structure.
+ *  Safe for AI context consumption (model reads text, not renders Markdown). */
+function compressMarkdown(text: string): string {
+  if (!text.includes('#') && !text.includes('- ') && !text.includes('```')) return text
+  return text
+    // Remove blank line after headings: "## Title\n\ncontent" → "## Title\ncontent"
+    .replace(/^(#{1,6} .+)\n\n/gm, '$1\n')
+    // Collapse 2+ blank lines between list items to 1
+    .replace(/^([ \t]*[-*+] .+)\n\n(?=[ \t]*[-*+] )/gm, '$1\n')
+    // Remove blank line after code fence opening: "```lang\n\ncontent"
+    .replace(/^```(\w*)\n\n/gm, '```$1\n')
+    // Collapse blank lines between numbered list items
+    .replace(/^(\d+\. .+)\n\n(?=\d+\. )/gm, '$1\n')
+}
+
 function minifyJson(text: string): string {
   return text.replace(/(\{[\s\S]{200,}?\})/g, (match) => {
     try { return JSON.stringify(JSON.parse(match)) } catch { return match }
@@ -134,12 +149,14 @@ function stripTimestamps(text: string): string {
 
 export function preprocess(text: string): string {
   let t = text
+  t = t.replace(/\r\n/g, '\n').replace(/\r/g, '\n')  // CRLF → LF
   t = stripAnsi(t)
   t = stripProgressBars(t)
   t = stripTimestamps(t)
   t = deduplicateStackTraces(t)
   t = deduplicateLines(t)
   t = minifyJson(t)
+  t = compressMarkdown(t)
   t = collapseWhitespace(t)
   return t
 }

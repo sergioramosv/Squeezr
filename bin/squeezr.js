@@ -29,7 +29,8 @@ const updateCheckPromise = (async () => {
     let cached = null
     try { cached = JSON.parse(fs.readFileSync(UPDATE_CHECK_FILE, 'utf-8')) } catch {}
     if (cached && Date.now() - cached.checkedAt < UPDATE_CHECK_INTERVAL) {
-      return cached.latest !== pkg.version ? cached.latest : null
+      // Only show update if npm has a NEWER version (not if local is ahead of npm)
+      return cached.latest && cached.latest > pkg.version ? cached.latest : null
     }
     // Fetch latest from npm (with timeout)
     const { get } = await import('https')
@@ -49,7 +50,7 @@ const updateCheckPromise = (async () => {
     const dir = path.dirname(UPDATE_CHECK_FILE)
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
     fs.writeFileSync(UPDATE_CHECK_FILE, JSON.stringify({ latest, checkedAt: Date.now() }))
-    return latest !== pkg.version ? latest : null
+    return latest && latest > pkg.version ? latest : null
   } catch { return null }
 })()
 
