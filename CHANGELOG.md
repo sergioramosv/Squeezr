@@ -2,6 +2,39 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.27.0] - 2026-05-12
+
+### Added
+
+- **Cursor MITM — `charsOriginal` in cursor stats**
+  `cursorStats` now tracks total original payload bytes processed, enabling accurate
+  context-reduction percentage in the dashboard (`charsSaved / charsOriginal × 100`).
+
+- **Gemini — `system_instruction` compression**
+  Gemini CLI uses a `system_instruction` field (not `system`) that was silently skipped
+  by the system prompt compressor. Now compressed via GPT-mini on the first request,
+  cached for subsequent requests.
+
+- **Gemini — `function_declarations` tool compression**
+  Gemini wraps tool definitions in `tools[].function_declarations[]` format, different
+  from both Anthropic (`input_schema`) and OpenAI (`function.parameters`) formats.
+  `compressToolDefinitions` now applied to each `function_declarations` array, trimming
+  verbose descriptions before forwarding. Same 30-60% savings as other providers.
+
+- **Cursor extension dashboard — Cursor-only stats, credit saved**
+  Dashboard now shows exclusively Cursor MITM metrics (not mixed with terminal proxy):
+  tokens saved from Cursor IDE traffic, credit saved in $ (Auto pool at $1.25/M tokens),
+  context reduction % bar, and compressed request count. Terminal proxy stats shown
+  separately in a collapsed section below. Dot indicator: green = active compressions,
+  orange = MITM running but no requests yet.
+
+### Fixed
+
+- **Session cache LRU cap (2000 entries)**
+  `session_cache.json` grew unbounded across sessions. On large projects with many
+  tool outputs, the file could reach 50 MB+. Added LRU eviction: max 2000 entries,
+  oldest evicted when full, recently-accessed entries promoted to end of map.
+
 ## [1.26.0] - 2026-05-12
 
 ### Added
