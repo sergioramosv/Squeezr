@@ -314,9 +314,38 @@ function isGzip(buf: Buffer): boolean {
 const FILE_CTX_CACHE_PATH = join(homedir(), '.squeezr', 'cursor_file_cache.json')
 const FILE_CTX_MIN_SIZE = 500  // only compress files > 500 chars
 
-
 let fileCtxCache: Record<string, string> = {}
 let cacheLoaded = false
+
+// ── Text field AI compression (cached by content hash) ───────────────────────
+// Same pipeline as file context but applied to ALL large text fields recursively.
+// First request: deterministic fallback (near-zero on gzip'd content).
+// Background: cursor-small compresses each field, stores by hash.
+// Next request with same old turn: AI-compressed version loaded instantly → 50-80%.
+
+const CURSOR_TEXT_CACHE_PATH = join(homedir(), '.squeezr', 'cursor_text_cache.json')
+const TEXT_MIN_SIZE = 500  // only AI-compress text fields > 500 chars
+
+let cursorTextCache: Record<string, string> = {}
+let textCacheLoaded = false
+
+function loadTextCache(): void {
+  if (textCacheLoaded) return
+  textCacheLoaded = true
+  try {
+    if (fs.existsSync(CURSOR_TEXT_CACHE_PATH)) {
+      cursorTextCache = JSON.parse(fs.readFileSync(CURSOR_TEXT_CACHE_PATH, 'utf-8'))
+    }
+  } catch { cursorTextCache = {} }
+}
+
+function saveTextCache(): void {
+  try { fs.writeFileSync(CURSOR_TEXT_CACHE_PATH, JSON.stringify(cursorTextCache)) } catch {}
+}
+
+function textHash(content: string): string {
+  return crypto.createHash('md5').update(content).digest('hex').slice(0, 12)
+}
 
 function loadFileCtxCache(): void {
   if (cacheLoaded) return
@@ -469,6 +498,24 @@ function cacheFileContent(content: string): void {
   }
 }
 
+/** Background: compress a text field via api5 cursor-small and store in cache. */
+async function cacheTextWithCursorAI(
+  text: string, bearer: string, headers: Record<string, string>
+): Promise<void> {
+  if (!bearer || text.length < TEXT_MIN_SIZE) return
+  loadTextCache()
+  const key = textHash(text)
+  if (cursorTextCache[key]) return
+  const compressed = await compressViaApi5(text, bearer, headers)
+  if (!compressed) return
+  const saved = text.length - compressed.length
+  if (saved < text.length * 0.2) return  // only cache if ≥20% savings
+  const pct = Math.round(saved / text.length * 100)
+  console.log(`[squeezr/cursor] text cached -${pct}% (${text.length}→${compressed.length})`)
+  cursorTextCache[key] = compressed
+  saveTextCache()
+}
+
 /** Navigate to file content chunks and compress them (det + AI cached by hash) */
 function compressFileContextChunks(payload: Buffer, bearerToken = '', cursorHeaders: Record<string, string> = {}): Buffer | null {
   try {
@@ -608,9 +655,17 @@ function looksLikeText(buf: Buffer): boolean {
   return printable / sample > 0.82
 }
 
-/** Recursively compress long text fields in a protobuf payload. Returns null if nothing changed. */
-function compressProtoStrings(payload: Buffer, depth = 0): Buffer | null {
+/** Recursively compress long text fields. Checks AI hash cache first; falls back to deterministic.
+ *  Schedules background cursor-small compression for uncached fields (fires after request completes). */
+function compressProtoStringsWithCache(
+  payload: Buffer,
+  bearer = '',
+  headers: Record<string, string> = {},
+  depth = 0,
+  bgScheduled = { n: 0 },  // shared counter — limits background API calls per frame
+): Buffer | null {
   if (depth > 6 || payload.length < 50) return null
+  loadTextCache()
   const fields = parseProtoFields(payload)
   let modified = false
   const newParts: Buffer[] = []
@@ -622,22 +677,42 @@ function compressProtoStrings(payload: Buffer, depth = 0): Buffer | null {
     }
     const inner = extractLengthDelimitedPayload(field.data)
 
-    // Try as text first — only if valid UTF-8 (no replacement chars)
     if (looksLikeText(inner)) {
       const text = inner.toString('utf-8')
       if (!text.includes('�')) {
-        // Valid UTF-8 text — compress deterministically
-        const compressed = deterministicCompress(text)
-        if (compressed.length < text.length - 50) {
+        const key = textHash(text)
+        const cached = cursorTextCache[key]
+
+        if (cached && cached.length < text.length - 50) {
+          // ✓ Cache hit: AI-compressed version from a previous request
           modified = true
-          newParts.push(encodeLengthDelimited(field.fieldNumber, Buffer.from(compressed, 'utf-8')))
+          cursorStats.charsSaved += text.length - cached.length
+          newParts.push(encodeLengthDelimited(field.fieldNumber, Buffer.from(cached, 'utf-8')))
           continue
         }
+
+        // Cache miss: deterministic fallback (low savings on gzip'd content, but safe)
+        const det = deterministicCompress(text)
+        if (det.length < text.length - 50) {
+          modified = true
+          newParts.push(encodeLengthDelimited(field.fieldNumber, Buffer.from(det, 'utf-8')))
+        } else {
+          newParts.push(field.data)
+        }
+
+        // Schedule background AI compression so next request gets cache hit
+        // Max 3 background calls per frame to avoid hammering api5
+        if (!cached && bearer && text.length >= TEXT_MIN_SIZE && bgScheduled.n < 3) {
+          bgScheduled.n++
+          setImmediate(() => { cacheTextWithCursorAI(text, bearer, headers).catch(() => {}) })
+        }
+        continue
       }
     }
-    // Always try as nested proto for large fields (even if text check passed)
+
+    // Recurse into nested proto for large non-text fields
     if (inner.length > 100) {
-      const compressedInner = compressProtoStrings(inner, depth + 1)
+      const compressedInner = compressProtoStringsWithCache(inner, bearer, headers, depth + 1, bgScheduled)
       if (compressedInner && compressedInner.length < inner.length) {
         modified = true
         newParts.push(encodeLengthDelimited(field.fieldNumber, compressedInner))
@@ -773,18 +848,28 @@ function processAgentFrame(frameBuf: Buffer, cursorHeaders: Record<string, strin
 
   const payload = isGzip(frame.payload) ? zlib.gunzipSync(frame.payload) : frame.payload
 
-  // Step 0: File context compression. Det now, cursor-small AI cached for next time.
   const bearer = (cursorHeaders['authorization'] as string) || ''
+
+  // Forward only Cursor-specific headers to internal API calls (no pseudo-headers)
+  const fwdHeaders: Record<string, string> = {}
+  for (const [k, v] of Object.entries(cursorHeaders)) {
+    const lk = k.toLowerCase()
+    if (lk.startsWith(':')) continue
+    if (lk.startsWith('x-cursor-') || lk === 'x-ghost-mode' || lk === 'x-session-id' || lk === 'x-client-key' || lk === 'authorization') {
+      fwdHeaders[lk] = v
+    }
+  }
+
+  // Step 0: File context chunks — det now, cursor-small AI cached for next request
   const afterFileCtx = compressFileContextChunks(payload, bearer, cursorHeaders) ?? payload
 
-  // Step 1: Lossless — remove field#8 (Lexical JSON verbose duplicate) from old messages.
-  // field#8 = Cursor's rich-text editor JSON of each message.
-  // field#1 already has the plain text, so stripping field#8 loses nothing.
+  // Step 1: Lossless — strip field#8 (Lexical JSON, verbose duplicate of plain text) from old messages
   const afterLossless = compressOldConversationMessages(afterFileCtx) ?? afterFileCtx
 
-  // Step 2: Deterministic — compress long text fields (tool outputs, verbose content).
-  // Safe: only removes noise (blank lines, trailing whitespace, repeated patterns).
-  const afterDet = compressProtoStrings(afterLossless) ?? afterLossless
+  // Step 2: AI hash-cache + deterministic fallback on all text fields.
+  // Cache miss → deterministic (low savings on gzip'd content) + schedule background api5 call.
+  // Cache hit  → AI-compressed version (50-80% savings) loaded instantly.
+  const afterDet = compressProtoStringsWithCache(afterLossless, bearer, fwdHeaders) ?? afterLossless
 
   if (afterDet.length >= payload.length) return frameBuf
 
