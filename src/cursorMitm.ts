@@ -655,6 +655,46 @@ function looksLikeText(buf: Buffer): boolean {
   return printable / sample > 0.82
 }
 
+/** Trim verbose descriptions in a single tool definition (same logic as compressor.ts). */
+function trimToolDef(tool: Record<string, unknown>): Record<string, unknown> {
+  const trimSentences = (s: string, n: number): string => {
+    if (s.length < 150) return s
+    const parts = s.split(/(?<=[.!?])\s+/)
+    if (parts.length <= n) return s
+    const t = parts.slice(0, n).join(' ')
+    return t.length < s.length - 30 ? t : s
+  }
+  const trimProps = (props: Record<string, unknown>): Record<string, unknown> => {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(props)) {
+      const d = v as Record<string, unknown>
+      out[k] = typeof d.description === 'string' && d.description.length > 80
+        ? { ...d, description: trimSentences(d.description, 1) }
+        : v
+    }
+    return out
+  }
+  let t = { ...tool }
+  if (typeof t.description === 'string') t = { ...t, description: trimSentences(t.description, 2) }
+  for (const sk of ['input_schema', 'parameters'] as const) {
+    const s = t[sk] as Record<string, unknown> | undefined
+    if (s?.properties && typeof s.properties === 'object') {
+      t = { ...t, [sk]: { ...s, properties: trimProps(s.properties as Record<string, unknown>) } }
+    }
+  }
+  if (t.function && typeof t.function === 'object') {
+    const fn = t.function as Record<string, unknown>
+    let fn2 = { ...fn }
+    if (typeof fn2.description === 'string') fn2 = { ...fn2, description: trimSentences(fn2.description, 2) }
+    const p = fn2.parameters as Record<string, unknown> | undefined
+    if (p?.properties && typeof p.properties === 'object') {
+      fn2 = { ...fn2, parameters: { ...p, properties: trimProps(p.properties as Record<string, unknown>) } }
+    }
+    t = { ...t, function: fn2 }
+  }
+  return t
+}
+
 /** Recursively compress long text fields. Checks AI hash cache first; falls back to deterministic.
  *  Schedules background cursor-small compression for uncached fields (fires after request completes). */
 function compressProtoStringsWithCache(
@@ -680,11 +720,38 @@ function compressProtoStringsWithCache(
     if (looksLikeText(inner)) {
       const text = inner.toString('utf-8')
       if (!text.includes('�')) {
+        // ── JSON fast-path: minify + tool description trimming ─────────────────
+        // JSON must stay valid — skip LLM cache, apply deterministic only.
+        // Catches: MCP tool definitions, Cursor Rules (JSON format), config blobs.
+        const trimmed = text.trimStart()
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+          try {
+            const parsed = JSON.parse(text)
+            let result = parsed
+            // If it's an array of tool definitions, trim verbose descriptions
+            if (Array.isArray(parsed) && parsed.length > 0 &&
+                typeof parsed[0] === 'object' && parsed[0] !== null &&
+                ('name' in parsed[0] || 'function' in parsed[0]) &&
+                ('description' in parsed[0] || 'input_schema' in parsed[0] || 'parameters' in parsed[0])) {
+              result = parsed.map((t: Record<string, unknown>) => trimToolDef(t))
+            }
+            const minified = JSON.stringify(result)
+            if (minified.length < text.length - 50) {
+              modified = true
+              cursorStats.charsSaved += text.length - minified.length
+              newParts.push(encodeLengthDelimited(field.fieldNumber, Buffer.from(minified, 'utf-8')))
+              continue
+            }
+          } catch { /* not valid JSON — fall through to text path */ }
+        }
+
+        // ── Plain text: AI hash-cache path ────────────────────────────────────
         const key = textHash(text)
         const cached = cursorTextCache[key]
 
         if (cached && cached.length < text.length - 50) {
           // ✓ Cache hit: AI-compressed version from a previous request
+          // Covers: old conversation turns (user + assistant), Cursor Rules, system context
           modified = true
           cursorStats.charsSaved += text.length - cached.length
           newParts.push(encodeLengthDelimited(field.fieldNumber, Buffer.from(cached, 'utf-8')))

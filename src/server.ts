@@ -12,6 +12,7 @@ import {
   compressAnthropicMessages,
   compressOpenAIMessages,
   compressGeminiContents,
+  compressToolDefinitions,
 } from './compressor.js'
 import { isBypassed, setBypassed, toggleBypassed } from './bypass.js'
 import { circuitBreaker } from './circuitBreaker.js'
@@ -254,6 +255,12 @@ app.post('/v1/messages', async (c) => {
     }
   }
 
+  // Tool definition compression (MCP tools are identical every request — trim verbose descriptions)
+  if (Array.isArray(body.tools) && (body.tools as unknown[]).length > 0 && !config.dryRun) {
+    const { tools: compTools } = compressToolDefinitions(body.tools as Array<Record<string, unknown>>)
+    body.tools = compTools
+  }
+
   const systemExtraChars = typeof body.system === 'string'
     ? body.system.length
     : Array.isArray(body.system)
@@ -392,6 +399,12 @@ app.post('/v1/chat/completions', async (c) => {
       msgs[0].content = sp.text
       stats.recordSystemPromptSaved(sp.originalLen, sp.compressedLen)
     }
+  }
+
+  // Tool definition compression (same as Anthropic path — MCP tools identical every request)
+  if (Array.isArray(body.tools) && (body.tools as unknown[]).length > 0 && !config.dryRun) {
+    const { tools: compTools } = compressToolDefinitions(body.tools as Array<Record<string, unknown>>)
+    body.tools = compTools
   }
 
   const oaiCompT0 = Date.now()
