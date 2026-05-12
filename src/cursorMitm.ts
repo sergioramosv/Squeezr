@@ -1302,7 +1302,9 @@ function handleCursorH2(
     const path = clientHeaders[':path'] as string || ''
     const method = clientHeaders[':method'] as string || 'POST'
 
-    console.log(`[squeezr/cursor] H2 stream: ${method} ${path}`)
+    // Count ALL streams — not just the ones we compress — so dashboard shows real traffic
+    cursorStats.requests++
+    console.log(`[squeezr/cursor] H2 stream #${cursorStats.requests}: ${method} ${path}`)
     const shouldIntercept = INTERCEPTED_PATHS.has(path)
 
     // Build upstream headers
@@ -1324,7 +1326,6 @@ function handleCursorH2(
 
     if (path === CURSOR_AGENT_RUN_PATH) {
       // ── Smart-pipe: compress AgentService/Run without buffering delay ─────
-      cursorStats.requests++
       const upStream = upstreamSession.request(upHeaders)
       // Pass headers so pipeWithCompression can use Cursor's auth token for AI compression
       const hdrs: Record<string, string> = {}
@@ -1392,9 +1393,6 @@ function handleCursorH2(
       })
       const requestBuf = Buffer.concat(chunks)
       console.log(`[squeezr/cursor] intercepted ${path} body=${requestBuf.length}b`)
-
-      // ── Intercepted chat path: compress and forward ────────────
-      cursorStats.requests++
 
       try {
         // Parse ConnectRPC frame

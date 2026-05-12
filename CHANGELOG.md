@@ -2,6 +2,18 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.27.1] - 2026-05-12
+
+### Fixed
+
+- **Cursor MITM — `cursorStats.requests` counted ALL streams, not just compressed ones**
+  Previous code only incremented the request counter for `AgentService/Run` and the old
+  `INTERCEPTED_PATHS`. Any other path (WebSearch, BrowseURL, tool-specific endpoints, etc.)
+  went through the transparent proxy without incrementing the counter, so the dashboard
+  always showed 0 requests even when traffic was flowing through the MITM.
+  Fixed: counter incremented for every H2 stream at the top of the handler, before any
+  path branching. Duplicate `requests++` in sub-branches removed.
+
 ## [1.27.0] - 2026-05-12
 
 ### Added
