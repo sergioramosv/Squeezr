@@ -2,6 +2,18 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.27.2] - 2026-05-12
+
+### Fixed
+
+- **Cursor MITM — telemetry streams inflating request counter**
+  After counting all H2 streams, Cursor's background traffic (analytics, pings, auth)
+  was being counted as "requests" in the dashboard, making it look like hundreds of
+  AI requests when the user hadn't sent any chat messages.
+  Fixed: `AnalyticsService/*`, `NetworkService/*`, `/oauth/*`, `/extensions-control`
+  and OPTIONS requests are now classified as background and excluded from
+  `cursorStats.requests`. Only actual AI/chat paths increment the counter.
+
 ## [1.27.1] - 2026-05-12
 
 ### Fixed

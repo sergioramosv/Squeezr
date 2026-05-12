@@ -1302,9 +1302,20 @@ function handleCursorH2(
     const path = clientHeaders[':path'] as string || ''
     const method = clientHeaders[':method'] as string || 'POST'
 
-    // Count ALL streams — not just the ones we compress — so dashboard shows real traffic
-    cursorStats.requests++
-    console.log(`[squeezr/cursor] H2 stream #${cursorStats.requests}: ${method} ${path}`)
+    // Only count AI/chat requests — skip telemetry, pings, auth, analytics
+    const isBackgroundPath = (
+      path.includes('AnalyticsService') ||
+      path.includes('NetworkService') ||
+      path.includes('/oauth/') ||
+      path === '/extensions-control' ||
+      method === 'OPTIONS'
+    )
+    if (!isBackgroundPath) {
+      cursorStats.requests++
+      console.log(`[squeezr/cursor] AI stream #${cursorStats.requests}: ${method} ${path}`)
+    } else {
+      console.log(`[squeezr/cursor] bg: ${method} ${path}`)
+    }
     const shouldIntercept = INTERCEPTED_PATHS.has(path)
 
     // Build upstream headers
