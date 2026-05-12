@@ -927,6 +927,9 @@ function processAgentFrame(frameBuf: Buffer, cursorHeaders: Record<string, strin
     }
   }
 
+  // Track original size for stats (before any compression)
+  cursorStats.charsOriginal += payload.length
+
   // Step 0: File context chunks — det now, cursor-small AI cached for next request
   const afterFileCtx = compressFileContextChunks(payload, bearer, cursorHeaders) ?? payload
 
@@ -994,7 +997,7 @@ function pipeWithCompression(
 
 // ── Compression via Cursor's own API ─────────────────────────────────────────
 
-let cursorStats = { requests: 0, compressed: 0, charsSaved: 0 }
+let cursorStats = { requests: 0, compressed: 0, charsSaved: 0, charsOriginal: 0 }
 
 export function getCursorStats() {
   return { ...cursorStats }

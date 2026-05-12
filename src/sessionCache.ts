@@ -32,6 +32,8 @@ export interface SessionBlock {
   originalChars: number
 }
 
+const CACHE_MAX_ENTRIES = 2000  // LRU cap — prevents unbounded growth across sessions
+
 const cache = new Map<string, SessionBlock>()
 
 export function hashText(text: string): string {
@@ -39,11 +41,23 @@ export function hashText(text: string): string {
 }
 
 export function getBlock(hash: string): SessionBlock | undefined {
-  return cache.get(hash)
+  const block = cache.get(hash)
+  if (block) {
+    // LRU: move to end on access
+    cache.delete(hash)
+    cache.set(hash, block)
+  }
+  return block
 }
 
 export function setBlock(hash: string, block: SessionBlock): void {
+  if (cache.has(hash)) cache.delete(hash)  // refresh position
   cache.set(hash, block)
+  // Evict oldest entries when over cap
+  if (cache.size > CACHE_MAX_ENTRIES) {
+    const oldest = cache.keys().next().value
+    if (oldest !== undefined) cache.delete(oldest)
+  }
 }
 
 export function sessionCacheSize(): number {

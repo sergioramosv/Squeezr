@@ -520,6 +520,32 @@ app.post('/v1beta/models/*', async (c) => {
     return c.body(await resp.arrayBuffer(), resp.status as any, respHeaders)
   }
 
+  // Gemini system_instruction compression (same as Anthropic system prompt)
+  if (config.compressSystemPrompt && !config.dryRun) {
+    const si = body.system_instruction as { parts?: Array<{ text?: string }> } | undefined
+    if (si?.parts) {
+      for (const part of si.parts) {
+        if (typeof part.text === 'string' && part.text.length > 200) {
+          const sp = await compressSystemPrompt(part.text, googleKey, 'gpt-mini')
+          part.text = sp.text
+          stats.recordSystemPromptSaved(sp.originalLen, sp.compressedLen)
+        }
+      }
+    }
+  }
+
+  // Gemini tool declaration compression (function_declarations format)
+  if (Array.isArray(body.tools) && (body.tools as unknown[]).length > 0 && !config.dryRun) {
+    const geminiTools = body.tools as Array<Record<string, unknown>>
+    body.tools = geminiTools.map(toolGroup => {
+      if (!Array.isArray(toolGroup.function_declarations)) return toolGroup
+      const { tools: compressed } = compressToolDefinitions(
+        toolGroup.function_declarations as Array<Record<string, unknown>>
+      )
+      return { ...toolGroup, function_declarations: compressed }
+    })
+  }
+
   const gemCompT0 = Date.now()
   const [compressedContents, savings] = await compressGeminiContents(
     contents as Parameters<typeof compressGeminiContents>[0],
