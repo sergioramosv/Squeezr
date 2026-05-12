@@ -2,6 +2,58 @@
 
 All notable changes to Squeezr will be documented here.
 
+## [1.25.0] - 2026-05-12
+
+### Added
+
+- **Cursor MITM — AgentService/Run smart-pipe compression (api5)**
+  Cursor 3.x routes all agent/chat traffic through `agentn.api5.cursor.sh/agent.v1.AgentService/Run`
+  using ConnectRPC + gzip framing. Squeezr now intercepts these requests without buffering delay:
+  headers are forwarded immediately, the request frame is buffered until complete, compressed,
+  then forwarded. Three-step pipeline: file context compression → field#8 (Lexical JSON) stripping
+  from old messages → deterministic text compression.
+
+- **Cursor MITM — AI hash-cache compression for all proto text fields**
+  `compressProtoStringsWithCache` replaces the previous deterministic-only `compressProtoStrings`.
+  Problem: `deterministicCompress` before re-gzip produced ~0 net bytes because gzip already
+  handles whitespace. Fix: hash each large text field (>500 chars), check `cursor_text_cache.json`.
+  Cache miss → deterministic + schedule `cacheTextWithCursorAI` in background via `setImmediate`.
+  Cache hit (next request with same old turn) → AI-compressed version applied instantly: 50–80%
+  savings on conversation history, Cursor Rules, system context. Covers both user turns AND
+  model response turns (both appear as text fields in subsequent requests).
+
+- **Cursor MITM — File context AI compression via api5 + caching pipeline**
+  `compressFileContextChunks` navigates the proto tree to individual file content chunks
+  (field#2 in the container). Each chunk: deterministic compression now + `cacheFileWithCursorAI`
+  scheduled in background. Uses `agentn.api5.cursor.sh/AgentService/Run` with the user's own
+  subscription bearer token — no external API key needed. Results cached in
+  `~/.squeezr/cursor_file_cache.json` by MD5 hash; subsequent requests with same file content
+  get the AI-compressed version instantly.
+
+- **MCP tool definition compression — both Cursor MITM and terminal proxy**
+  MCP tool definitions are identical across all requests in a session. Each tool carries verbose
+  descriptions (multiple paragraphs per tool, per-property docs). `compressToolDefinitions`
+  (exported from `compressor.ts`) trims top-level descriptions to 2 sentences and per-property
+  descriptions to 1 sentence. Handles Anthropic format (`input_schema`) and OpenAI format
+  (`parameters` / `function.parameters`). Session-level in-memory cache (Map). Called in
+  `server.ts` for both Anthropic and OpenAI paths.
+  In Cursor MITM: JSON fast-path in `compressProtoStringsWithCache` detects tool definition
+  arrays by structure heuristic, applies `trimToolDef` + JSON minification. Savings: 30–60%
+  of tool definition token budget (typically 5K–20K chars per request with multiple MCPs).
+
+- **`squeezr gain` — Cursor IDE stats**
+  Dashboard and `squeezr gain` now show Cursor-specific counters: requests intercepted,
+  compressed count, chars saved via Cursor MITM pipeline.
+
+### Fixed
+
+- **Cursor MITM — `fwdHeaders` excluded pseudo-headers (`:method`, `:path`, etc.)**
+  Internal api5 calls for AI compression were forwarding HTTP/2 pseudo-headers, causing
+  request failures. Fixed: only `x-cursor-*`, `x-ghost-mode`, `x-session-id`, `x-client-key`,
+  and `authorization` are forwarded.
+
+- **File context debug logging removed** — verbose per-chunk logs removed from production path.
+
 ## [1.24.0] - 2026-04-22
 
 ### Added
